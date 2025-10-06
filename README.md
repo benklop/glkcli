@@ -1,6 +1,6 @@
 # Rust GLK CLI Launcher
 
-A memory-safe Rust rewrite of the glkcli launcher for glkterm.
+A memory-safe Rust launcher for glkterm bsased interactive fiction interpreters.
 
 ## Features
 
@@ -48,41 +48,3 @@ cargo build --release
 ```
 
 The binary will be created at `target/release/glkcli`.
-
-## Installation
-
-To replace the C version in your build:
-
-```bash
-# Build the Rust version
-cd launcher_rust
-cargo build --release
-
-# Copy to build directory (adjust path as needed)
-cp target/release/glkcli ../build/
-
-# Or install system-wide
-cargo install --path .
-```
-
-## Advantages over C Version
-
-1. **Memory Safety**: No risk of double-free, use-after-free, or memory leaks
-2. **Error Handling**: Robust error handling with context
-3. **Maintainability**: Cleaner, more readable code
-4. **Dependencies**: Minimal dependencies, statically linked
-5. **Performance**: Should be comparable or faster than C version
-
-## Testing
-
-You can test the Rust version side-by-side with the C version:
-
-```bash
-# Test C version
-./build/glkcli mygame.z5
-
-# Test Rust version  
-cd launcher_rust && cargo run -- ../mygame.z5
-```
-
-Both should behave identically, but the Rust version eliminates memory management bugs.
