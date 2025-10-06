@@ -1,6 +1,6 @@
 # Rust GLK CLI Launcher
 
-A memory-safe Rust launcher for glkterm bsased interactive fiction interpreters.
+A memory-safe Rust launcher for glkterm based interactive fiction interpreters.
 
 ## Features
 
