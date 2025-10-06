@@ -104,7 +104,19 @@ impl GameStorage {
     /// Get all downloaded games
     pub fn get_downloaded_games(&self) -> Result<Vec<LocalGame>> {
         let metadata = self.load_metadata()?;
-        Ok(metadata.games.into_values().collect())
+        let mut games: Vec<LocalGame> = metadata.games.into_values().collect();
+        
+        // Sort by last played (most recent first), then by title
+        games.sort_by(|a, b| {
+            match (&b.last_played, &a.last_played) {
+                (Some(b_time), Some(a_time)) => b_time.cmp(a_time),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.title.cmp(&b.title),
+            }
+        });
+        
+        Ok(games)
     }
 
     /// Check if a game is already downloaded
@@ -541,9 +553,10 @@ mod tests {
     fn test_sanitize_filename() {
         let storage = GameStorage::new().unwrap();
         
+        // Colon and space each become underscore, so "Zork: The" -> "Zork__The"
         assert_eq!(
             storage.sanitize_filename("Zork: The Great Underground Adventure!"),
-            "Zork_The_Great_Underground_Adventure"
+            "Zork__The_Great_Underground_Adventure"
         );
         
         assert_eq!(

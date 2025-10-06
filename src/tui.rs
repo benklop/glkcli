@@ -1,3 +1,34 @@
+//! Terminal User Interface module
+//!
+//! This module coordinates the TUI application's main event loop and business logic.
+//! It brings together several specialized modules:
+//!
+//! - `app::state` - Core application state and data structures
+//! - `ui` - All rendering logic for the terminal interface  
+//! - `utils` - Utility functions like HTML entity decoding
+//! - `ifdb` - IFDB API client for fetching game data
+//! - `storage` - Local game storage and management
+//! - `launcher` - Game interpreter detection and launching
+//! - `network` - Network connectivity checking
+//!
+//! ## Architecture
+//!
+//! The TUI uses a clean separation of concerns:
+//! - **State Management** (`app::state`): TuiApp struct holds all application state
+//! - **Presentation** (`ui`): Rendering functions transform state into terminal UI
+//! - **Business Logic** (this module): Operations like download, import, search
+//! - **Input Handling** (this module): Keyboard event processing and routing
+//!
+//! ## Design Decisions
+//!
+//! Business operations and input handlers remain in this module because they:
+//! 1. Require mutable access to nearly all TuiApp state fields
+//! 2. Need terminal control (e.g., disable/enable raw mode for game launches)
+//! 3. Coordinate between multiple subsystems (network, storage, IFDB API)
+//! 4. Are inherently coupled to the application's state machine
+//!
+//! Further extraction would increase complexity without improving maintainability.
+
 use anyhow::{Context, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -5,100 +36,27 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap,
-    },
-    Frame, Terminal,
+    backend::CrosstermBackend,
+    Terminal,
 };
 use std::io;
-use std::time::SystemTime;
 
-use crate::ifdb::{IfdbClient, Game, GameDetails, SearchOptions};
-use crate::storage::{GameStorage, LocalGame, SaveFile};
-use crate::launcher::Launcher;
-use crate::network::NetworkChecker;
-
-/// Main TUI application
-pub struct TuiApp {
-    /// Current application state
-    state: AppState,
-    /// IFDB API client
-    ifdb_client: IfdbClient,
-    /// Local game storage
-    storage: GameStorage,
-    /// Game launcher
-    launcher: Launcher,
-    /// Network connectivity checker
-    network: NetworkChecker,
-    /// Whether network is available
-    is_online: bool,
-    /// Debug mode enabled
-    debug: bool,
-    /// Current tab index
-    current_tab: usize,
-    /// Search input state
-    search_input: String,
-    /// Search results
-    search_results: Vec<Game>,
-    /// Selected game in search results
-    search_selection: ListState,
-    /// Current page for search results
-    current_search_page: u32,
-    /// Whether there are more search results to load
-    has_more_search_results: bool,
-    /// Flag to trigger loading next page
-    should_load_next_page: bool,
-    /// Downloaded games
-    downloaded_games: Vec<LocalGame>,
-    /// Selected downloaded game
-    downloaded_selection: ListState,
-    /// Save files for current game
-    save_files: Vec<SaveFile>,
-    /// Selected save file
-    save_selection: ListState,
-    /// Current game details being viewed
-    current_game_details: Option<GameDetails>,
-    /// Loading state
-    loading: bool,
-    /// Status message
-    status_message: Option<String>,
-    /// Time when status message was set (for auto-clearing)
-    status_message_time: Option<std::time::Instant>,
-    /// Input mode
-    input_mode: InputMode,
-    /// File path being entered for import
-    import_file_path: String,
-    /// TUID of game being imported (for commercial games)
-    import_game_tuid: Option<String>,
-    /// Flag to indicate terminal needs full redraw
-    needs_redraw: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-enum AppState {
-    Browse,
-    GameDetails,
-    SaveFilesDialog,
-    Download,
-    DownloadedGames,
-    Settings,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-enum InputMode {
-    Normal,
-    Searching,
-    Confirmation,
-    ImportingFile,
-}
+use crate::app::state::{TuiApp, AppState, InputMode};
+use crate::ifdb::{Game, SearchOptions};
+use crate::storage::{LocalGame, SaveFile};
 
 /// Run the TUI application
+///
+/// This is the main entry point for the terminal interface. It:
+/// 1. Sets up the terminal in raw mode with alternate screen
+/// 2. Creates and initializes the TuiApp
+/// 3. Runs the event loop until the user quits
+/// 4. Restores the terminal to its original state
+///
+/// # Arguments
+///
+/// * `debug` - Enable debug logging to ~/.glkcli/debug.log
+/// * `assume_online` - Assume network is available (skip connectivity check)
 pub async fn run_tui(debug: bool, assume_online: bool) -> Result<()> {
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
@@ -110,6 +68,18 @@ pub async fn run_tui(debug: bool, assume_online: bool) -> Result<()> {
 
     // Create app
     let mut app = TuiApp::new(debug, assume_online).await?;
+    
+    // Load initial data
+    app.refresh_downloaded_games().await?;
+    
+    // Only browse games if online
+    if app.is_online {
+        app.browse_popular_games().await?;
+    } else {
+        // Start on the downloaded games tab if offline
+        app.current_tab = 1;
+        app.set_status_message("Offline - showing downloaded games only".to_string());
+    }
     
     // Run app
     let result = app.run(&mut terminal).await;
@@ -127,75 +97,16 @@ pub async fn run_tui(debug: bool, assume_online: bool) -> Result<()> {
 }
 
 impl TuiApp {
-    pub async fn new(debug: bool, assume_online: bool) -> Result<Self> {
-        let ifdb_client = IfdbClient::new()?;
-        let storage = GameStorage::new()?;
-        let launcher = Launcher::new()?;
-        let network = NetworkChecker::new(debug, assume_online);
-
-        // Check network connectivity
-        let is_online = network.is_connected().await;
-        
-        if debug {
-            log::info!("Network connectivity: {}", if is_online { "online" } else { "offline" });
-        }
-
-        let mut app = TuiApp {
-            state: AppState::Browse,
-            ifdb_client,
-            storage,
-            launcher,
-            network,
-            is_online,
-            debug,
-            current_tab: 0,
-            search_input: String::new(),
-            search_results: Vec::new(),
-            search_selection: ListState::default(),
-            current_search_page: 1,
-            has_more_search_results: true,
-            should_load_next_page: false,
-            downloaded_games: Vec::new(),
-            downloaded_selection: ListState::default(),
-            save_files: Vec::new(),
-            save_selection: ListState::default(),
-            current_game_details: None,
-            loading: false,
-            status_message: None,
-            status_message_time: None,
-            input_mode: InputMode::Normal,
-            import_file_path: String::new(),
-            import_game_tuid: None,
-            needs_redraw: false,
-        };
-
-        // Load initial data
-        app.refresh_downloaded_games().await?;
-        
-        // Only browse games if online
-        if is_online {
-            app.browse_popular_games().await?;
-        } else {
-            // Start on the downloaded games tab if offline
-            app.current_tab = 1;
-            app.set_status_message("Offline - showing downloaded games only".to_string());
-        }
-
-        Ok(app)
-    }
-
-    /// Decode common HTML entities in text
-    fn decode_html_entities(text: &str) -> String {
-        html_escape::decode_html_entities(text).to_string()
-    }
-
-    async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+    async fn run<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         loop {
             // If we need a full redraw (e.g., after launching a game), clear and reset the terminal
             if self.needs_redraw {
                 terminal.clear()?;
                 self.needs_redraw = false;
             }
+            
+            // Check if status message should be auto-cleared
+            self.check_status_timeout();
             
             // Check if we need to load the next page
             if self.should_load_next_page {
@@ -1090,6 +1001,8 @@ impl TuiApp {
                 // Record that the game was played
                 let _ = self.storage.record_game_played(&game.tuid);
                 self.set_status_message("Game ended successfully".to_string());
+                // Refresh the game list to update play count
+                let _ = self.refresh_downloaded_games().await;
             }
             Err(e) => {
                 self.set_status_message(format!("Failed to launch game: {}", e));
@@ -1185,12 +1098,8 @@ impl TuiApp {
         Ok(())
     }
 
-    fn set_status_message(&mut self, message: String) {
-        self.status_message = Some(message);
-        self.status_message_time = Some(std::time::Instant::now());
-    }
-
     fn handle_escape(&mut self) {
+        use ratatui::widgets::ListState;
         match self.state {
             AppState::GameDetails => {
                 self.state = AppState::Browse;
@@ -1205,371 +1114,5 @@ impl TuiApp {
                 self.status_message = None;
             }
         }
-    }
-
-    fn ui(&mut self, f: &mut Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Tabs
-                Constraint::Min(0),    // Main content
-                Constraint::Length(3), // Status bar
-            ])
-            .split(f.size());
-
-        self.render_tabs(f, chunks[0]);
-        self.render_main_content(f, chunks[1]);
-        self.render_status_bar(f, chunks[2]);
-    }
-
-    fn render_tabs(&self, f: &mut Frame, area: Rect) {
-        let network_status = if self.is_online { "●" } else { "○" };
-        let title = format!("glkcli - IFDB Browser {}", network_status);
-        
-        let titles = if self.is_online {
-            vec!["Browse Games", "My Games"]
-        } else {
-            vec!["My Games"]
-        };
-        
-        let current_tab = if self.is_online {
-            self.current_tab
-        } else {
-            // When offline, only one tab (My Games), always show it selected
-            0
-        };
-        
-        let tabs = Tabs::new(titles)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .style(Style::default().fg(Color::Gray))
-            .highlight_style(Style::default().fg(Color::Yellow))
-            .select(current_tab);
-        f.render_widget(tabs, area);
-    }
-
-    fn render_main_content(&mut self, f: &mut Frame, area: Rect) {
-        match self.state {
-            AppState::GameDetails => self.render_game_details(f, area),
-            AppState::SaveFilesDialog => self.render_saves_dialog(f, area),
-            _ => {
-                match self.current_tab {
-                    0 => {
-                        if self.is_online {
-                            self.render_browse_tab(f, area)
-                        } else {
-                            self.render_downloaded_tab(f, area)
-                        }
-                    },
-                    1 => self.render_downloaded_tab(f, area),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn render_browse_tab(&mut self, f: &mut Frame, area: Rect) {
-        if !self.is_online {
-            // Show offline message
-            let offline_msg = Paragraph::new("Network connection unavailable.\n\nBrowse and search features are disabled.\n\nPress Tab to view your downloaded games.")
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .title("Browse Games - Offline"))
-                .wrap(Wrap { trim: true });
-            f.render_widget(offline_msg, area);
-            return;
-        }
-        
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Search input
-                Constraint::Min(0),    // Results
-            ])
-            .split(area);
-
-        // Search input
-        let search_style = if self.input_mode == InputMode::Searching {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        };
-
-        let search_input = Paragraph::new(self.search_input.as_str())
-            .style(search_style)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Search (Press 's' to search, Enter to execute)"));
-        f.render_widget(search_input, chunks[0]);
-
-        // Results list
-        let items: Vec<ListItem> = self.search_results
-            .iter()
-            .map(|game| {
-                let rating = game.star_rating
-                    .map(|r| format!(" [{:.1}★]", r))
-                    .unwrap_or_default();
-                
-                ListItem::new(format!("{} - {}{}", game.title, game.author, rating))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Games (Enter: Details, 'd': Download)"))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-            .highlight_symbol("> ");
-
-        f.render_stateful_widget(list, chunks[1], &mut self.search_selection);
-    }
-
-    fn render_downloaded_tab(&mut self, f: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = self.downloaded_games
-            .iter()
-            .map(|game| {
-                let play_info = if game.play_count > 0 {
-                    format!(" (played {} times)", game.play_count)
-                } else {
-                    " (not played)".to_string()
-                };
-                
-                ListItem::new(format!("{} - {}{}", game.title, game.author, play_info))
-            })
-            .collect();
-
-        let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title("Downloaded Games (Enter: Launch | v: View Saves | x: Delete)"))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-            .highlight_symbol("> ");
-
-        f.render_stateful_widget(list, area, &mut self.downloaded_selection);
-    }
-
-    fn render_saves_dialog(&mut self, f: &mut Frame, area: Rect) {
-        if self.save_files.is_empty() {
-            // Show helpful message when no saves
-            let msg = "No save files found for this game.\n\nPlay the game to create save files.\n\nPress Esc to close.";
-            
-            let paragraph = Paragraph::new(msg)
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .title("Save Files"))
-                .wrap(Wrap { trim: true });
-            f.render_widget(paragraph, area);
-            return;
-        }
-        
-        let items: Vec<ListItem> = self.save_files
-            .iter()
-            .map(|save| {
-                let date = save.save_date
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .ok()
-                    .and_then(|d| {
-                        chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                    })
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "Unknown date".to_string());
-                    
-                ListItem::new(format!("{} - {} ({} bytes)", 
-                    save.save_name, date, save.file_size))
-            })
-            .collect();
-
-        let title = if let Some(i) = self.downloaded_selection.selected() {
-            if let Some(game) = self.downloaded_games.get(i) {
-                format!("Save Files for: {} (Esc: Close)", game.title)
-            } else {
-                "Save Files (Esc: Close)".to_string()
-            }
-        } else {
-            "Save Files (Esc: Close)".to_string()
-        };
-
-        let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .title(title))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-            .highlight_symbol("> ");
-
-        f.render_stateful_widget(list, area, &mut self.save_selection);
-    }
-
-    fn render_game_details(&self, f: &mut Frame, area: Rect) {
-        if let Some(details) = &self.current_game_details {
-            // If in import mode, show import input at the top
-            let (details_area, import_input_area) = if self.input_mode == InputMode::ImportingFile {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3), // Import input
-                        Constraint::Min(0),    // Game details
-                    ])
-                    .split(area);
-                (chunks[1], Some(chunks[0]))
-            } else {
-                (area, None)
-            };
-
-            let mut text = Vec::new();
-            
-            // Check if this is a commercial game
-            let is_commercial = details.is_commercial();
-            
-            // Check if game is already downloaded
-            let tuid = details.ifdb.as_ref().map(|i| i.tuid.as_str()).unwrap_or("");
-            let is_downloaded = self.storage.is_game_downloaded(tuid).unwrap_or(false);
-            
-            if let Some(biblio) = &details.bibliographic {
-                if let Some(title) = &biblio.title {
-                    text.push(Line::from(vec![
-                        Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::from(Self::decode_html_entities(title)),
-                    ]));
-                }
-                
-                if let Some(author) = &biblio.author {
-                    text.push(Line::from(vec![
-                        Span::styled("Author: ", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::from(Self::decode_html_entities(author)),
-                    ]));
-                }
-                
-                // Show download status
-                if is_downloaded {
-                    text.push(Line::from(""));
-                    text.push(Line::from(vec![
-                        Span::styled("✓ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                        Span::styled("Already in My Games", 
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                    ]));
-                }
-                
-                // Show commercial status prominently
-                if is_commercial {
-                    text.push(Line::from(""));
-                    text.push(Line::from(vec![
-                        Span::styled("⚠ COMMERCIAL GAME ", 
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD)),
-                        Span::styled("(Must be purchased separately)", 
-                            Style::default().fg(Color::Yellow)),
-                    ]));
-                    
-                    if let Some(url) = details.get_purchase_url() {
-                        text.push(Line::from(vec![
-                            Span::styled("Purchase: ", Style::default().add_modifier(Modifier::BOLD)),
-                            Span::from(url),
-                        ]));
-                    }
-                    
-                    if !is_downloaded {
-                        text.push(Line::from(""));
-                        text.push(Line::from(vec![
-                            Span::styled("→ ", Style::default().fg(Color::Green)),
-                            Span::from("After purchasing, press 'i' to import the game file"),
-                        ]));
-                    }
-                }
-                
-                if let Some(desc) = &biblio.description {
-                    text.push(Line::from(""));
-                    text.push(Line::from(vec![
-                        Span::styled("Description:", Style::default().add_modifier(Modifier::BOLD)),
-                    ]));
-                    // Decode HTML entities in the description
-                    let decoded_desc = Self::decode_html_entities(desc);
-                    text.push(Line::from(decoded_desc));
-                }
-            }
-
-            let title = if is_downloaded {
-                "Game Details (Esc: Back) - Already Downloaded"
-            } else if is_commercial {
-                "Game Details (i: Import | Esc: Back)"
-            } else {
-                "Game Details (Esc: Back, 'd': Download)"
-            };
-
-            let paragraph = Paragraph::new(text)
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .title(title))
-                .wrap(Wrap { trim: true });
-
-            f.render_widget(paragraph, details_area);
-
-            // Render import input if active
-            if let Some(input_area) = import_input_area {
-                let import_style = Style::default().fg(Color::Green);
-                let import_input = Paragraph::new(self.import_file_path.as_str())
-                    .style(import_style)
-                    .block(Block::default()
-                        .borders(Borders::ALL)
-                        .title("Enter file path (supports ~/ for home directory)"));
-                f.render_widget(import_input, input_area);
-            }
-        }
-    }
-
-    fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let status_text = if self.loading {
-            "Loading...".to_string()
-        } else if let Some(msg) = &self.status_message {
-            msg.clone()
-        } else {
-            match self.input_mode {
-                InputMode::Searching => "Search mode - Type to search, Enter to execute, Esc to cancel".to_string(),
-                InputMode::Confirmation => "Confirm action? (y/n)".to_string(),
-                InputMode::ImportingFile => "Import mode - Enter file path, Enter to confirm, Esc to cancel".to_string(),
-                InputMode::Normal => {
-                    // Context-aware status based on current tab
-                    let base = "q: Quit | Tab: Switch";
-                    match self.state {
-                        AppState::GameDetails => {
-                            // Check if game is already downloaded
-                            let tuid = self.current_game_details
-                                .as_ref()
-                                .and_then(|d| d.ifdb.as_ref())
-                                .map(|i| i.tuid.as_str())
-                                .unwrap_or("");
-                            let is_downloaded = self.storage.is_game_downloaded(tuid).unwrap_or(false);
-                            
-                            if is_downloaded {
-                                format!("{} | ↑↓: Navigate | Esc: Back", base)
-                            } else {
-                                // Check if current game is commercial
-                                let is_commercial = self.current_game_details
-                                    .as_ref()
-                                    .map(|d| d.is_commercial())
-                                    .unwrap_or(false);
-                                
-                                if is_commercial {
-                                    format!("{} | ↑↓: Navigate | i: Import | Esc: Back", base)
-                                } else {
-                                    format!("{} | ↑↓: Navigate | d: Download | Esc: Back", base)
-                                }
-                            }
-                        }
-                        _ => {
-                            match self.current_tab {
-                                0 => format!("{} | s: Search | d: Download | r: Refresh", base),
-                                1 => format!("{} | x: Delete | r: Refresh", base),
-                                2 => format!("{} | r: Refresh", base),
-                                _ => base.to_string(),
-                            }
-                        }
-                    }
-                }
-            }
-        };
-
-        let status = Paragraph::new(status_text)
-            .block(Block::default().borders(Borders::ALL));
-        f.render_widget(status, area);
     }
 }

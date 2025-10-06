@@ -9,6 +9,9 @@ mod ifdb;
 mod storage;
 mod tui;
 mod network;
+mod app;
+mod ui;
+mod utils;
 
 use launcher::*;
 

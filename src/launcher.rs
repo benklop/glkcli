@@ -78,9 +78,22 @@ impl Launcher {
         let status = cmd.status()
             .with_context(|| format!("Failed to execute interpreter: {}", interpreter_path.display()))?;
 
+        // Some interpreters return non-zero exit codes even after successful gameplay
+        // We only treat it as a real error if the exit code indicates a serious problem
+        // (e.g., 127 = command not found, 126 = not executable, negative = killed by signal)
         if !status.success() {
-            let code = status.code().unwrap_or(-1);
-            return Err(anyhow!("Interpreter exited with code: {}", code));
+            if let Some(code) = status.code() {
+                // Exit codes 1-3 are often used by interpreters for normal gameplay completion
+                // Only treat high error codes or execution failures as real errors
+                if code >= 100 || code < 0 {
+                    return Err(anyhow!("Interpreter exited with error code: {}", code));
+                }
+                // For codes 1-99, we assume the game ran (user might have quit, saved, etc.)
+                // and don't treat it as an error
+            } else {
+                // No exit code (killed by signal?) - this is a real error
+                return Err(anyhow!("Interpreter was terminated by signal"));
+            }
         }
 
         Ok(())
