@@ -4,10 +4,7 @@ A memory-safe Rust rewrite of the glkcli launcher for glkterm.
 
 ## Features
 
-- **Memory Safety**: Written in Rust to eliminate memory management bugs like double-free errors
-- **Format Detection**: Automatic detection of game file formats by header and extension
-- **Multiple Interpreters**: Supports all the same interpreters as the C version
-- **Clean CLI**: Uses clap for robust command-line parsing
+- Automatic detection of game file formats by header and extension
 
 ## Supported Game Formats
 
