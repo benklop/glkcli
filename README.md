@@ -28,22 +28,21 @@ A memory-safe Rust launcher for glkterm bsased interactive fiction interpreters.
 
 ```bash
 # Run a game (auto-detects format)
-cargo run -- mygame.z5
+./glkcli mygame.z5
 
 # Show detected format without running
-cargo run -- --format mygame.z5
+./glkcli --format mygame.z5
 
 # Verbose output
-cargo run -- --verbose adventure.ulx
+./glkcli --verbose adventure.ulx
 
 # Show help
-cargo run -- --help
+./glkcli --help
 ```
 
 ## Building
 
 ```bash
-cd launcher_rust
 cargo build --release
 ```
 
