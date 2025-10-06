@@ -70,6 +70,10 @@ pub struct TuiApp {
     status_message_time: Option<std::time::Instant>,
     /// Input mode
     input_mode: InputMode,
+    /// File path being entered for import
+    import_file_path: String,
+    /// TUID of game being imported (for commercial games)
+    import_game_tuid: Option<String>,
     /// Flag to indicate terminal needs full redraw
     needs_redraw: bool,
 }
@@ -91,6 +95,7 @@ enum InputMode {
     Normal,
     Searching,
     Confirmation,
+    ImportingFile,
 }
 
 /// Run the TUI application
@@ -159,6 +164,8 @@ impl TuiApp {
             status_message: None,
             status_message_time: None,
             input_mode: InputMode::Normal,
+            import_file_path: String::new(),
+            import_game_tuid: None,
             needs_redraw: false,
         };
 
@@ -175,6 +182,11 @@ impl TuiApp {
         }
 
         Ok(app)
+    }
+
+    /// Decode common HTML entities in text
+    fn decode_html_entities(text: &str) -> String {
+        html_escape::decode_html_entities(text).to_string()
     }
 
     async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -220,6 +232,11 @@ impl TuiApp {
                                 break;
                             }
                         }
+                        InputMode::ImportingFile => {
+                            if self.handle_import_input(key.code).await? {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -254,10 +271,11 @@ impl TuiApp {
                     self.set_status_message("Search unavailable - no network connection".to_string());
                 }
             }
-            KeyCode::Up => self.move_selection_up(),
-            KeyCode::Down => self.move_selection_down(),
+            KeyCode::Up => self.move_selection_up().await?,
+            KeyCode::Down => self.move_selection_down().await?,
             KeyCode::Enter => self.handle_enter().await?,
             KeyCode::Char('d') => self.handle_download().await?,
+            KeyCode::Char('i') => self.handle_import().await?,
             KeyCode::Char('x') => self.handle_delete().await?,
             KeyCode::Char('v') => self.handle_view_saves().await?,
             KeyCode::Char('r') => self.refresh_current_view().await?,
@@ -304,7 +322,34 @@ impl TuiApp {
         Ok(false)
     }
 
-    fn move_selection_up(&mut self) {
+    async fn move_selection_up(&mut self) -> Result<()> {
+        // Handle game details view - navigate to previous game
+        if self.state == AppState::GameDetails {
+            match self.current_tab {
+                0 if self.is_online => {
+                    // Browse tab - move through search results
+                    if let Some(i) = self.search_selection.selected() {
+                        let new_i = if i == 0 {
+                            self.search_results.len().saturating_sub(1)
+                        } else {
+                            i - 1
+                        };
+                        self.search_selection.select(Some(new_i));
+                        
+                        // Load the new game's details
+                        if let Some(game) = self.search_results.get(new_i) {
+                            let tuid = game.tuid.clone();
+                            self.show_game_details(&tuid).await?;
+                        }
+                    }
+                }
+                _ => {
+                    // My Games tab or offline mode - not implemented yet as those navigate to launch
+                }
+            }
+            return Ok(());
+        }
+        
         // Handle save files dialog separately
         if self.state == AppState::SaveFilesDialog {
             let i = match self.save_selection.selected() {
@@ -318,7 +363,7 @@ impl TuiApp {
                 None => 0,
             };
             self.save_selection.select(Some(i));
-            return;
+            return Ok(());
         }
         
         match self.current_tab {
@@ -367,9 +412,37 @@ impl TuiApp {
             }
             _ => {}
         }
+        Ok(())
     }
 
-    fn move_selection_down(&mut self) {
+    async fn move_selection_down(&mut self) -> Result<()> {
+        // Handle game details view - navigate to next game
+        if self.state == AppState::GameDetails {
+            match self.current_tab {
+                0 if self.is_online => {
+                    // Browse tab - move through search results
+                    if let Some(i) = self.search_selection.selected() {
+                        let new_i = if i >= self.search_results.len().saturating_sub(1) {
+                            0  // Wrap to beginning
+                        } else {
+                            i + 1
+                        };
+                        self.search_selection.select(Some(new_i));
+                        
+                        // Load the new game's details
+                        if let Some(game) = self.search_results.get(new_i) {
+                            let tuid = game.tuid.clone();
+                            self.show_game_details(&tuid).await?;
+                        }
+                    }
+                }
+                _ => {
+                    // My Games tab or offline mode - not implemented yet
+                }
+            }
+            return Ok(());
+        }
+        
         // Handle save files dialog separately
         if self.state == AppState::SaveFilesDialog {
             let i = match self.save_selection.selected() {
@@ -383,7 +456,7 @@ impl TuiApp {
                 None => 0,
             };
             self.save_selection.select(Some(i));
-            return;
+            return Ok(());
         }
         
         match self.current_tab {
@@ -436,6 +509,7 @@ impl TuiApp {
             }
             _ => {}
         }
+        Ok(())
     }
 
     async fn handle_enter(&mut self) -> Result<()> {
@@ -558,6 +632,183 @@ impl TuiApp {
                 self.set_status_message("No game selected".to_string());
             }
         }
+        Ok(())
+    }
+
+    async fn handle_import(&mut self) -> Result<()> {
+        // Only allow import from game details view for commercial games
+        if self.state == AppState::GameDetails {
+            if let Some(details) = &self.current_game_details {
+                // Check if game is already downloaded
+                if let Some(ifdb) = &details.ifdb {
+                    if self.storage.is_game_downloaded(&ifdb.tuid)? {
+                        self.set_status_message("Game already in My Games - cannot import again".to_string());
+                        return Ok(());
+                    }
+                }
+                
+                if details.is_commercial() {
+                    // Get the TUID from the current game
+                    if let Some(ifdb) = &details.ifdb {
+                        self.import_game_tuid = Some(ifdb.tuid.clone());
+                        self.import_file_path.clear();
+                        self.input_mode = InputMode::ImportingFile;
+                        self.set_status_message("Enter the path to the game file you purchased".to_string());
+                    }
+                } else {
+                    self.set_status_message("This game is not commercial - use 'd' to download".to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_import_input(&mut self, key: KeyCode) -> Result<bool> {
+        match key {
+            KeyCode::Enter => {
+                self.input_mode = InputMode::Normal;
+                let file_path = self.import_file_path.trim().to_string();
+                
+                if file_path.is_empty() {
+                    self.set_status_message("Import cancelled".to_string());
+                    return Ok(false);
+                }
+                
+                if let Some(tuid) = &self.import_game_tuid.clone() {
+                    self.import_game_file(tuid, &file_path).await?;
+                }
+                
+                self.import_file_path.clear();
+                self.import_game_tuid = None;
+            }
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.import_file_path.clear();
+                self.import_game_tuid = None;
+                self.set_status_message("Import cancelled".to_string());
+            }
+            KeyCode::Char(c) => {
+                self.import_file_path.push(c);
+            }
+            KeyCode::Backspace => {
+                self.import_file_path.pop();
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn import_game_file(&mut self, tuid: &str, file_path: &str) -> Result<()> {
+        if self.debug {
+            log::debug!("Importing game file from: {}", file_path);
+        }
+
+        // Expand home directory if path starts with ~
+        let expanded_path = if file_path.starts_with("~/") {
+            if let Some(home) = std::env::var_os("HOME") {
+                std::path::PathBuf::from(home).join(&file_path[2..])
+            } else {
+                std::path::PathBuf::from(file_path)
+            }
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Check if file exists
+        if !expanded_path.exists() {
+            self.set_status_message(format!("File not found: {}", file_path));
+            return Ok(());
+        }
+
+        // Check if it's a file
+        if !expanded_path.is_file() {
+            self.set_status_message(format!("Not a file: {}", file_path));
+            return Ok(());
+        }
+
+        self.loading = true;
+        self.set_status_message("Importing game file...".to_string());
+
+        // Read the file
+        match std::fs::read(&expanded_path) {
+            Ok(bytes) => {
+                if self.debug {
+                    log::debug!("Read {} bytes from {}", bytes.len(), file_path);
+                }
+
+                // Get file extension
+                let extension = expanded_path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("dat");
+
+                if self.debug {
+                    log::debug!("File extension: {}", extension);
+                }
+
+                // We need to create a Game struct from the current game details
+                if let Some(details) = &self.current_game_details {
+                    // Create a minimal Game struct for storage
+                    let game_title = details.bibliographic
+                        .as_ref()
+                        .and_then(|b| b.title.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    let game_author = details.bibliographic
+                        .as_ref()
+                        .and_then(|b| b.author.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
+                    let link = details.ifdb
+                        .as_ref()
+                        .map(|i| i.link.clone())
+                        .unwrap_or_else(|| format!("https://ifdb.org/viewgame?id={}", tuid));
+
+                    let game = Game {
+                        tuid: tuid.to_string(),
+                        title: game_title.clone(),
+                        author: game_author,
+                        link,
+                        has_cover_art: None,
+                        devsys: None,
+                        published: None,
+                        average_rating: details.ifdb.as_ref().and_then(|i| i.average_rating),
+                        num_ratings: None,
+                        star_rating: details.ifdb.as_ref().and_then(|i| i.star_rating),
+                        cover_art_link: details.ifdb.as_ref().and_then(|i| i.coverart.as_ref().map(|c| c.url.clone())),
+                        play_time_in_minutes: details.ifdb.as_ref().and_then(|i| i.play_time_in_minutes),
+                    };
+
+                    // Store the file using add_game_with_cover (async version)
+                    match self.storage.add_game_with_cover(&game, Some(details), &bytes, extension).await {
+                        Ok(_) => {
+                            self.set_status_message(format!("Game '{}' imported successfully!", game_title));
+                            self.refresh_downloaded_games().await?;
+                            
+                            // Return to browse view
+                            self.state = AppState::Browse;
+                            self.current_game_details = None;
+                        }
+                        Err(e) => {
+                            if self.debug {
+                                log::error!("Failed to store imported game: {}", e);
+                            }
+                            self.set_status_message(format!("Failed to import game: {}", e));
+                        }
+                    }
+                } else {
+                    self.set_status_message("Game details not available".to_string());
+                }
+            }
+            Err(e) => {
+                if self.debug {
+                    log::error!("Failed to read file {}: {}", file_path, e);
+                }
+                self.set_status_message(format!("Failed to read file: {}", e));
+            }
+        }
+
+        self.loading = false;
         Ok(())
     }
 
@@ -695,6 +946,18 @@ impl TuiApp {
             Ok(details) => {
                 if self.debug {
                     log::debug!("Successfully fetched game details: {:?}", details);
+                }
+                
+                // Check if game is commercial
+                if details.is_commercial() {
+                    self.loading = false;
+                    let msg = if let Some(url) = details.get_purchase_url() {
+                        format!("This is a commercial game. Purchase at: {}", url)
+                    } else {
+                        "This is a commercial game and must be purchased separately".to_string()
+                    };
+                    self.set_status_message(msg);
+                    return Ok(());
                 }
                 
                 if let Some(ifdb_data) = &details.ifdb {
@@ -1137,21 +1400,80 @@ impl TuiApp {
 
     fn render_game_details(&self, f: &mut Frame, area: Rect) {
         if let Some(details) = &self.current_game_details {
+            // If in import mode, show import input at the top
+            let (details_area, import_input_area) = if self.input_mode == InputMode::ImportingFile {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Import input
+                        Constraint::Min(0),    // Game details
+                    ])
+                    .split(area);
+                (chunks[1], Some(chunks[0]))
+            } else {
+                (area, None)
+            };
+
             let mut text = Vec::new();
+            
+            // Check if this is a commercial game
+            let is_commercial = details.is_commercial();
+            
+            // Check if game is already downloaded
+            let tuid = details.ifdb.as_ref().map(|i| i.tuid.as_str()).unwrap_or("");
+            let is_downloaded = self.storage.is_game_downloaded(tuid).unwrap_or(false);
             
             if let Some(biblio) = &details.bibliographic {
                 if let Some(title) = &biblio.title {
                     text.push(Line::from(vec![
                         Span::styled("Title: ", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::from(title.clone()),
+                        Span::from(Self::decode_html_entities(title)),
                     ]));
                 }
                 
                 if let Some(author) = &biblio.author {
                     text.push(Line::from(vec![
                         Span::styled("Author: ", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::from(author.clone()),
+                        Span::from(Self::decode_html_entities(author)),
                     ]));
+                }
+                
+                // Show download status
+                if is_downloaded {
+                    text.push(Line::from(""));
+                    text.push(Line::from(vec![
+                        Span::styled("✓ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                        Span::styled("Already in My Games", 
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    ]));
+                }
+                
+                // Show commercial status prominently
+                if is_commercial {
+                    text.push(Line::from(""));
+                    text.push(Line::from(vec![
+                        Span::styled("⚠ COMMERCIAL GAME ", 
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)),
+                        Span::styled("(Must be purchased separately)", 
+                            Style::default().fg(Color::Yellow)),
+                    ]));
+                    
+                    if let Some(url) = details.get_purchase_url() {
+                        text.push(Line::from(vec![
+                            Span::styled("Purchase: ", Style::default().add_modifier(Modifier::BOLD)),
+                            Span::from(url),
+                        ]));
+                    }
+                    
+                    if !is_downloaded {
+                        text.push(Line::from(""));
+                        text.push(Line::from(vec![
+                            Span::styled("→ ", Style::default().fg(Color::Green)),
+                            Span::from("After purchasing, press 'i' to import the game file"),
+                        ]));
+                    }
                 }
                 
                 if let Some(desc) = &biblio.description {
@@ -1159,17 +1481,38 @@ impl TuiApp {
                     text.push(Line::from(vec![
                         Span::styled("Description:", Style::default().add_modifier(Modifier::BOLD)),
                     ]));
-                    text.push(Line::from(desc.clone()));
+                    // Decode HTML entities in the description
+                    let decoded_desc = Self::decode_html_entities(desc);
+                    text.push(Line::from(decoded_desc));
                 }
             }
+
+            let title = if is_downloaded {
+                "Game Details (Esc: Back) - Already Downloaded"
+            } else if is_commercial {
+                "Game Details (i: Import | Esc: Back)"
+            } else {
+                "Game Details (Esc: Back, 'd': Download)"
+            };
 
             let paragraph = Paragraph::new(text)
                 .block(Block::default()
                     .borders(Borders::ALL)
-                    .title("Game Details (Esc: Back, 'd': Download)"))
+                    .title(title))
                 .wrap(Wrap { trim: true });
 
-            f.render_widget(paragraph, area);
+            f.render_widget(paragraph, details_area);
+
+            // Render import input if active
+            if let Some(input_area) = import_input_area {
+                let import_style = Style::default().fg(Color::Green);
+                let import_input = Paragraph::new(self.import_file_path.as_str())
+                    .style(import_style)
+                    .block(Block::default()
+                        .borders(Borders::ALL)
+                        .title("Enter file path (supports ~/ for home directory)"));
+                f.render_widget(import_input, input_area);
+            }
         }
     }
 
@@ -1182,11 +1525,36 @@ impl TuiApp {
             match self.input_mode {
                 InputMode::Searching => "Search mode - Type to search, Enter to execute, Esc to cancel".to_string(),
                 InputMode::Confirmation => "Confirm action? (y/n)".to_string(),
+                InputMode::ImportingFile => "Import mode - Enter file path, Enter to confirm, Esc to cancel".to_string(),
                 InputMode::Normal => {
                     // Context-aware status based on current tab
                     let base = "q: Quit | Tab: Switch";
                     match self.state {
-                        AppState::GameDetails => format!("{} | d: Download | Esc: Back", base),
+                        AppState::GameDetails => {
+                            // Check if game is already downloaded
+                            let tuid = self.current_game_details
+                                .as_ref()
+                                .and_then(|d| d.ifdb.as_ref())
+                                .map(|i| i.tuid.as_str())
+                                .unwrap_or("");
+                            let is_downloaded = self.storage.is_game_downloaded(tuid).unwrap_or(false);
+                            
+                            if is_downloaded {
+                                format!("{} | ↑↓: Navigate | Esc: Back", base)
+                            } else {
+                                // Check if current game is commercial
+                                let is_commercial = self.current_game_details
+                                    .as_ref()
+                                    .map(|d| d.is_commercial())
+                                    .unwrap_or(false);
+                                
+                                if is_commercial {
+                                    format!("{} | ↑↓: Navigate | i: Import | Esc: Back", base)
+                                } else {
+                                    format!("{} | ↑↓: Navigate | d: Download | Esc: Back", base)
+                                }
+                            }
+                        }
                         _ => {
                             match self.current_tab {
                                 0 => format!("{} | s: Search | d: Download | r: Refresh", base),

@@ -29,6 +29,7 @@ fern = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 zip = "0.5"
 tempfile = "3.8"
+html-escape = "0.2"
 
 [profile.release]
 lto = true

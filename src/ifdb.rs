@@ -54,6 +54,64 @@ pub struct GameDetails {
     pub ifdb: Option<IfdbData>,
 }
 
+impl GameDetails {
+    /// Check if this game is marked as commercial (paid) and has no free downloads
+    /// A game is only treated as commercial if:
+    /// 1. It has the "commercial" tag, AND
+    /// 2. It has no downloadable game files (all downloads are non-game or documentation)
+    pub fn is_commercial(&self) -> bool {
+        if let Some(ifdb) = &self.ifdb {
+            // Check if has commercial tag
+            let has_commercial_tag = if let Some(tags) = &ifdb.tags {
+                tags.iter().any(|tag| tag.name.eq_ignore_ascii_case("commercial"))
+            } else {
+                false
+            };
+            
+            // If not tagged as commercial, it's definitely free
+            if !has_commercial_tag {
+                return false;
+            }
+            
+            // Check if there are any downloadable game files
+            if let Some(downloads) = &ifdb.downloads {
+                let has_downloadable_game = downloads.links.iter().any(|link| {
+                    // Check if this is a game file (not documentation/hints)
+                    link.is_game || 
+                    // Also check for common game file formats
+                    link.format.as_ref().map(|f| {
+                        let format_lower = f.to_lowercase();
+                        matches!(format_lower.as_str(), 
+                            "zcode" | "zblorb" | "ulx" | "gblorb" | "glulx" | 
+                            "tads" | "tads2" | "tads3" | "hugo" | "adrift" |
+                            "quest" | "ink" | "twine" | "alan"
+                        )
+                    }).unwrap_or(false)
+                });
+                
+                // If there are downloadable game files, treat as free despite commercial tag
+                if has_downloadable_game {
+                    return false;
+                }
+            }
+            
+            // Has commercial tag but no downloadable game files
+            return true;
+        }
+        false
+    }
+
+    /// Get the purchase URL from contacts if available
+    pub fn get_purchase_url(&self) -> Option<String> {
+        match &self.contacts {
+            ContactsField::Object(contact) => contact.url.clone(),
+            ContactsField::Array(contacts) => {
+                contacts.first().and_then(|c| c.url.clone())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 #[allow(dead_code)]
