@@ -56,6 +56,10 @@ impl Launcher {
         let interpreter_path = self.find_interpreter_path(interpreter_name)
             .ok_or_else(|| anyhow!("Interpreter '{}' not found", interpreter_name))?;
 
+        // Change to the game's directory (where save files will be created)
+        let game_dir = game_path.parent()
+            .ok_or_else(|| anyhow!("Could not determine game directory"))?;
+        
         // Build command arguments
         let mut cmd = Command::new(&interpreter_path);
         
@@ -66,6 +70,9 @@ impl Launcher {
         
         // Add game file
         cmd.arg(game_path);
+
+        // Set working directory to the game's directory
+        cmd.current_dir(game_dir);
 
         // Execute the interpreter
         let status = cmd.status()

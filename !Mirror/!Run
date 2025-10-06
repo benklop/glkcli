@@ -1,0 +1,5 @@
+| !Run Obey file for !Adventure
+WimpSlot -min 3000K -max 3000K
+Set WriteAdv$Dir <Obey$Dir>
+RMEnsure SlidingHeap 1.02 RMLoad <WriteAdv$Dir>.Modules.SlidingHp
+Run <WriteAdv$Dir>.!RunImage %*0

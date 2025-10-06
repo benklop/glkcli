@@ -98,6 +98,14 @@ pub const MAGIC_PATTERNS: &[MagicPattern] = &[
         pattern: b"TADS3 r",
         format: GameFormat::Tads,
     },
+    MagicPattern {
+        pattern: b"Version ",
+        format: GameFormat::Adrift,
+    },
+    MagicPattern {
+        pattern: b"\x3C\x42\x3F\xC9",
+        format: GameFormat::Adrift5,
+    },
     // Z-code is handled specially by version byte validation
 ];
 
@@ -131,6 +139,7 @@ pub const EXTENSION_MAPPINGS: &[ExtensionMapping] = &[
     ExtensionMapping { extension: "a3c", format: GameFormat::Alan3 },
     ExtensionMapping { extension: "taf", format: GameFormat::Adrift },
     ExtensionMapping { extension: "baf", format: GameFormat::Adrift5 },
+    ExtensionMapping { extension: "adrift", format: GameFormat::Adrift },
     ExtensionMapping { extension: "saga", format: GameFormat::Scott },
     ExtensionMapping { extension: "plus", format: GameFormat::Plus },
     ExtensionMapping { extension: "tay", format: GameFormat::Taylor },

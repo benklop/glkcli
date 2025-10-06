@@ -47,3 +47,51 @@ cargo build --release
 ```
 
 The binary will be created at `target/release/glkcli`.
+
+### Build Features
+
+The following compile-time features can be enabled or disabled:
+
+- **`network-check`** (enabled by default): Enables D-Bus based network connectivity checking via IWD or NetworkManager. Disable this for embedded systems without D-Bus support:
+
+```bash
+# Build without network checking
+cargo build --release --no-default-features
+
+# Or explicitly disable it
+cargo build --release --features ""
+```
+
+When `network-check` is disabled, the app assumes network is always available.
+
+### Runtime Options
+
+- **`--assume-online`**: Skip network connectivity checks and assume online (useful if D-Bus checks are unreliable on your system)
+- **`--debug`**: Enable debug logging to `~/.glkcli/glkcli.log`
+
+## TUI Browser
+
+Launch without a game file to enter the interactive TUI browser:
+
+```bash
+./glkcli
+```
+
+Features:
+- Browse and search the IFDB (Interactive Fiction Database)
+- Download games directly to `~/.glkcli/games/`
+- Launch downloaded games
+- Automatic ZIP extraction and IF file detection
+- Network connectivity detection (hides online features when offline)
+- Tab navigation between Browse, My Games, and Save Files
+
+### Network Connectivity
+
+The TUI automatically detects network connectivity using:
+1. IWD via D-Bus (for systems using iwd)
+2. NetworkManager via D-Bus (for systems using NetworkManager)
+
+When offline:
+- Browse tab is automatically hidden
+- Search and download features are disabled
+- Press 'r' to recheck connectivity

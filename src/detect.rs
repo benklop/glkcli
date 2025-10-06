@@ -39,6 +39,33 @@ pub fn detect_format_by_header(file_path: &Path) -> Result<GameFormat> {
         return Ok(GameFormat::Hugo);
     }
     
+    // Additional validation for Adrift TAF files
+    if bytes_read >= 8 && &header[0..8] == b"Version " {
+        // Look for version numbers like "3.9" or "4.0" following "Version "
+        if bytes_read >= 12 {
+            let version_part = std::str::from_utf8(&header[8..12]).unwrap_or("");
+            if version_part.starts_with("3.9") || version_part.starts_with("4.0") {
+                return Ok(GameFormat::Adrift);
+            }
+        }
+        // Default to Adrift if we found "Version " but couldn't parse version
+        return Ok(GameFormat::Adrift);
+    }
+    
+    // Special handling for ZIP files with .adrift extension
+    if bytes_read >= 4 && &header[0..4] == b"PK\x03\x04" {
+        let extension = file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
+        
+        if let Some(ext) = extension {
+            if ext == "adrift" {
+                return Ok(GameFormat::Adrift);
+            }
+        }
+    }
+    
     Ok(GameFormat::Unknown)
 }
 

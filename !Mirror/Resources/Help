@@ -1,0 +1,36 @@
+Adv:This is the Adventure icon
+Text:This is where user input and all text is displayed. Click MENU to save a history of the game. You will be warned when the text buffer is getting full so that you have a chance to save it before it is overwritten.
+input0:Type your commands here then either click on OK or type RETURN.
+input1:\Saccept a typed-in command.
+input2:Select this switch if you want your commands to be hidden from other players.
+save0:You may enter a filename here or accept the one offered.
+save1:Drag this icon to a filer window to save the file.
+save2:\Ssave the file with under the displayed name.
+save3:\Sclose this window (or simply click outside the window).
+save4:\Sto open the filer window containing either saved positions or saved game histories.
+control0/control1/control2/control3/control4/control5/control6/control7/control8:Click \s on the compass points to move.
+control9:\Sgo up.
+control10:\Sgo down.
+control11:\Sgo in.
+control12:\Sgo out.
+control13:\Sturn around and go back the way you came.
+control14:\Smove forward.
+control15:\Sfollow a left turn.
+control16:\Sfollow a right turn.
+control17:\Son the arrowheads to move.
+control18:\Ssee a list of everything you have with you.
+control19:\Sprint the long description of your present location.
+control20:\Slet another player join the game.
+control21:\Ssave your current game position and status. Saved positions may be reloaded by either dragging the file onto the text window or simply double-clicking on the file icon.
+control22:\Sretrace your steps (up to a maximum of %0). This only works if there has been no change of player. The button shows the number of stored moves which can be retraced. There may be parts of the game where Retrace is disabled.
+control23:Short descriptions are normally printed when you revisit a place you've been before. Select this switch if you want long descriptions all the time.
+control24:\Srepeat the last command entered.
+control26:Shows whether an artificial light is present.
+control?/control??:This panel may be used for movement and certain other operations as an alternative to typing commands.
+input?/input??:This is the command input panel.
+save?/save??:This is the Save window which is used to save game positions and game histories.
+
+
+
+
+

@@ -1,0 +1,18 @@
+10	Maximum number of steps stored for Retrace
+33	Text lines displayed
+80	Text line length
+350	Maximum number of locations
+150	Maximum number of objects
+750	Maximum vocabulary entries
+16	SubsidMove
+32	VerbStart
+1000	NounStart
+5000	Connective
+5001	RepeatOb
+5002	Ignored
+5004	Any
+5100	WildCard
+6000	NamedLoc
+7000	YES
+0	ListHead
+150	LocStart
