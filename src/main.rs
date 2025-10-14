@@ -12,6 +12,7 @@ mod network;
 mod app;
 mod ui;
 mod utils;
+mod border_style;
 
 use launcher::*;
 

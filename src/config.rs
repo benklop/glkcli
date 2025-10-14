@@ -145,3 +145,121 @@ pub const EXTENSION_MAPPINGS: &[ExtensionMapping] = &[
     ExtensionMapping { extension: "tay", format: GameFormat::Taylor },
     ExtensionMapping { extension: "advs", format: GameFormat::Advsys },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_game_format_names() {
+        assert_eq!(GameFormat::Unknown.name(), "Unknown");
+        assert_eq!(GameFormat::ZCode.name(), "Z-code");
+        assert_eq!(GameFormat::Glulx.name(), "Glulx");
+        assert_eq!(GameFormat::Tads.name(), "TADS");
+        assert_eq!(GameFormat::Hugo.name(), "Hugo");
+        assert_eq!(GameFormat::Agt.name(), "AGT");
+        assert_eq!(GameFormat::Jacl.name(), "JACL");
+        assert_eq!(GameFormat::Level9.name(), "Level 9");
+        assert_eq!(GameFormat::Magnetic.name(), "Magnetic Scrolls");
+        assert_eq!(GameFormat::Alan2.name(), "Alan 2");
+        assert_eq!(GameFormat::Alan3.name(), "Alan 3");
+        assert_eq!(GameFormat::Adrift.name(), "Adrift");
+        assert_eq!(GameFormat::Adrift5.name(), "Adrift 5");
+        assert_eq!(GameFormat::Scott.name(), "Scott Adams");
+        assert_eq!(GameFormat::Plus.name(), "Plus");
+        assert_eq!(GameFormat::Taylor.name(), "TaylorMade");
+        assert_eq!(GameFormat::Advsys.name(), "AdvSys");
+    }
+
+    #[test]
+    fn test_game_format_interpreters() {
+        assert_eq!(GameFormat::Unknown.interpreter(), None);
+        assert_eq!(GameFormat::ZCode.interpreter(), Some("bocfel"));
+        assert_eq!(GameFormat::Glulx.interpreter(), Some("git"));
+        assert_eq!(GameFormat::Tads.interpreter(), Some("tadsr"));
+        assert_eq!(GameFormat::Hugo.interpreter(), Some("hugo"));
+        assert_eq!(GameFormat::Agt.interpreter(), Some("agility"));
+        assert_eq!(GameFormat::Jacl.interpreter(), Some("jacl"));
+        assert_eq!(GameFormat::Level9.interpreter(), Some("level9"));
+        assert_eq!(GameFormat::Magnetic.interpreter(), Some("magnetic"));
+        assert_eq!(GameFormat::Alan2.interpreter(), Some("alan2"));
+        assert_eq!(GameFormat::Alan3.interpreter(), Some("alan3"));
+        assert_eq!(GameFormat::Adrift.interpreter(), Some("scare"));
+        assert_eq!(GameFormat::Adrift5.interpreter(), Some("scare"));
+        assert_eq!(GameFormat::Scott.interpreter(), Some("scott"));
+        assert_eq!(GameFormat::Plus.interpreter(), Some("plus"));
+        assert_eq!(GameFormat::Taylor.interpreter(), Some("taylor"));
+        assert_eq!(GameFormat::Advsys.interpreter(), Some("advsys"));
+    }
+
+    #[test]
+    fn test_game_format_flags() {
+        // Currently all formats return empty flags
+        assert_eq!(GameFormat::ZCode.flags(), &[] as &[&str]);
+        assert_eq!(GameFormat::Glulx.flags(), &[] as &[&str]);
+    }
+
+    #[test]
+    fn test_game_format_display() {
+        assert_eq!(format!("{}", GameFormat::ZCode), "Z-code");
+        assert_eq!(format!("{}", GameFormat::Glulx), "Glulx");
+        assert_eq!(format!("{}", GameFormat::Unknown), "Unknown");
+    }
+
+    #[test]
+    fn test_game_format_equality() {
+        assert_eq!(GameFormat::ZCode, GameFormat::ZCode);
+        assert_ne!(GameFormat::ZCode, GameFormat::Glulx);
+        assert_ne!(GameFormat::Unknown, GameFormat::ZCode);
+    }
+
+    #[test]
+    fn test_game_format_clone_copy() {
+        let format1 = GameFormat::ZCode;
+        let format2 = format1; // Copy
+        assert_eq!(format1, format2);
+        
+        let format3 = format1.clone();
+        assert_eq!(format1, format3);
+    }
+
+    #[test]
+    fn test_magic_patterns_coverage() {
+        // Ensure all magic patterns are valid
+        for pattern in MAGIC_PATTERNS {
+            assert!(!pattern.pattern.is_empty());
+            assert_ne!(pattern.format, GameFormat::Unknown);
+        }
+    }
+
+    #[test]
+    fn test_extension_mappings_coverage() {
+        // Ensure all extension mappings are valid
+        for mapping in EXTENSION_MAPPINGS {
+            assert!(!mapping.extension.is_empty());
+            assert_ne!(mapping.format, GameFormat::Unknown);
+        }
+        
+        // Check some specific mappings
+        let z5_mapping = EXTENSION_MAPPINGS.iter()
+            .find(|m| m.extension == "z5")
+            .expect("z5 extension should exist");
+        assert_eq!(z5_mapping.format, GameFormat::ZCode);
+        
+        let ulx_mapping = EXTENSION_MAPPINGS.iter()
+            .find(|m| m.extension == "ulx")
+            .expect("ulx extension should exist");
+        assert_eq!(ulx_mapping.format, GameFormat::Glulx);
+    }
+
+    #[test]
+    fn test_all_zcode_extensions() {
+        for i in 1..=8 {
+            let ext = format!("z{}", i);
+            let mapping = EXTENSION_MAPPINGS.iter()
+                .find(|m| m.extension == ext);
+            assert!(mapping.is_some(), "Z-code extension {} should exist", ext);
+            assert_eq!(mapping.unwrap().format, GameFormat::ZCode);
+        }
+    }
+}

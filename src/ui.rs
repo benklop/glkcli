@@ -15,6 +15,12 @@ use std::time::SystemTime;
 
 use crate::app::state::{TuiApp, AppState, InputMode};
 use crate::utils::decode_html_entities;
+use crate::border_style::get_border_type;
+
+/// Helper function to create a block with appropriate border type for the terminal
+fn create_block() -> Block<'static> {
+    Block::default().border_type(get_border_type())
+}
 
 /// UI rendering implementation for TuiApp
 impl TuiApp {
@@ -53,7 +59,9 @@ impl TuiApp {
         };
         
         let tabs = Tabs::new(titles)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(create_block()
+                .borders(Borders::ALL)
+                .title(title))
             .style(Style::default().fg(Color::Gray))
             .highlight_style(Style::default().fg(Color::Yellow))
             .select(current_tab);
@@ -86,7 +94,7 @@ impl TuiApp {
         if !self.is_online {
             // Show offline message
             let offline_msg = Paragraph::new("Network connection unavailable.\n\nBrowse and search features are disabled.\n\nPress Tab to view your downloaded games.")
-                .block(Block::default()
+                .block(create_block()
                     .borders(Borders::ALL)
                     .title("Browse Games - Offline"))
                 .wrap(Wrap { trim: true });
@@ -111,7 +119,7 @@ impl TuiApp {
 
         let search_input = Paragraph::new(self.search_input.as_str())
             .style(search_style)
-            .block(Block::default()
+            .block(create_block()
                 .borders(Borders::ALL)
                 .title("Search (Press 's' to search, Enter to execute)"));
         f.render_widget(search_input, chunks[0]);
@@ -129,7 +137,7 @@ impl TuiApp {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default()
+            .block(create_block()
                 .borders(Borders::ALL)
                 .title("Games (Enter: Details, 'd': Download)"))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -154,7 +162,7 @@ impl TuiApp {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default()
+            .block(create_block()
                 .borders(Borders::ALL)
                 .title("Downloaded Games (Enter: Launch | v: View Saves | x: Delete)"))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -170,7 +178,7 @@ impl TuiApp {
             let msg = "No save files found for this game.\n\nPlay the game to create save files.\n\nPress Esc to close.";
             
             let paragraph = Paragraph::new(msg)
-                .block(Block::default()
+                .block(create_block()
                     .borders(Borders::ALL)
                     .title("Save Files"))
                 .wrap(Wrap { trim: true });
@@ -206,7 +214,7 @@ impl TuiApp {
         };
 
         let list = List::new(items)
-            .block(Block::default()
+            .block(create_block()
                 .borders(Borders::ALL)
                 .title(title))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -314,7 +322,7 @@ impl TuiApp {
             };
 
             let paragraph = Paragraph::new(text)
-                .block(Block::default()
+                .block(create_block()
                     .borders(Borders::ALL)
                     .title(title))
                 .wrap(Wrap { trim: true });
@@ -326,7 +334,7 @@ impl TuiApp {
                 let import_style = Style::default().fg(Color::Green);
                 let import_input = Paragraph::new(self.import_file_path.as_str())
                     .style(import_style)
-                    .block(Block::default()
+                    .block(create_block()
                         .borders(Borders::ALL)
                         .title("Enter file path (supports ~/ for home directory)"));
                 f.render_widget(import_input, input_area);
@@ -388,7 +396,7 @@ impl TuiApp {
         };
 
         let status = Paragraph::new(status_text)
-            .block(Block::default().borders(Borders::ALL));
+            .block(create_block().borders(Borders::ALL));
         f.render_widget(status, area);
     }
 }

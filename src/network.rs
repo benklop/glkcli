@@ -145,3 +145,49 @@ impl NetworkChecker {
         Err(anyhow::anyhow!("NetworkManager not available"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_network_checker_new() {
+        let checker = NetworkChecker::new(false, false);
+        assert!(!checker.debug);
+        assert!(!checker.assume_online);
+        
+        let checker = NetworkChecker::new(true, true);
+        assert!(checker.debug);
+        assert!(checker.assume_online);
+    }
+
+    #[tokio::test]
+    async fn test_network_checker_assume_online() {
+        let checker = NetworkChecker::new(false, true);
+        let connected = checker.is_connected().await;
+        
+        // Should always return true when assume_online is set
+        assert!(connected);
+    }
+
+    #[cfg(not(feature = "network-check"))]
+    #[tokio::test]
+    async fn test_network_checker_disabled_at_compile_time() {
+        let checker = NetworkChecker::new(false, false);
+        let connected = checker.is_connected().await;
+        
+        // Should always return true when feature is disabled
+        assert!(connected);
+    }
+
+    #[tokio::test]
+    async fn test_network_checker_debug_flag() {
+        let checker_no_debug = NetworkChecker::new(false, false);
+        let checker_debug = NetworkChecker::new(true, false);
+        
+        // Just test that both checkers can be created and called
+        // Actual connectivity check may fail in CI
+        let _ = checker_no_debug.is_connected().await;
+        let _ = checker_debug.is_connected().await;
+    }
+}

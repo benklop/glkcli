@@ -31,6 +31,12 @@ zip = "0.5"
 tempfile = "3.8"
 html-escape = "0.2"
 
+[dev-dependencies]
+mockito = "1.2"
+assert_fs = "1.0"
+predicates = "3.0"
+serial_test = "3.0"
+
 [profile.release]
 lto = true
 codegen-units = 1

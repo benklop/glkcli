@@ -141,3 +141,196 @@ fn detect_format_by_blorb(file_path: &Path) -> Result<GameFormat> {
     // Fallback: assume Z-code as it's most common in Blorb files
     Ok(GameFormat::ZCode)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_test_file(data: &[u8]) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("Failed to create temp file");
+        file.write_all(data).expect("Failed to write test data");
+        file.flush().expect("Failed to flush file");
+        file
+    }
+
+    #[test]
+    fn test_detect_zcode_by_header() {
+        // Z-code version 5 header (minimal valid header)
+        let mut data = vec![0u8; 32];
+        data[0] = 5; // Z-code version 5
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::ZCode);
+    }
+
+    #[test]
+    fn test_detect_zcode_all_versions() {
+        for version in 1..=8 {
+            let mut data = vec![0u8; 32];
+            data[0] = version;
+            let file = create_test_file(&data);
+            
+            let format = detect_format_by_header(file.path()).unwrap();
+            assert_eq!(format, GameFormat::ZCode, "Version {} should be detected", version);
+        }
+    }
+
+    #[test]
+    fn test_detect_glulx_by_header() {
+        let mut data = vec![0u8; 32];
+        data[0..4].copy_from_slice(b"Glul");
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Glulx);
+    }
+
+    #[test]
+    fn test_detect_tads2_by_header() {
+        let mut data = vec![0u8; 32];
+        data[0..12].copy_from_slice(b"TADS2 bin\x0A\x0D\x1A");
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Tads);
+    }
+
+    #[test]
+    fn test_detect_tads3_by_header() {
+        let mut data = vec![0u8; 32];
+        data[0..7].copy_from_slice(b"TADS3 r");
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Tads);
+    }
+
+    #[test]
+    fn test_detect_hugo_by_header() {
+        let mut data = vec![0u8; 32];
+        data[3] = b'-';
+        data[6] = b'-';
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Hugo);
+    }
+
+    #[test]
+    fn test_detect_adrift_by_header() {
+        let mut data = vec![0u8; 32];
+        data[0..12].copy_from_slice(b"Version 3.9 ");
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Adrift);
+    }
+
+    #[test]
+    fn test_detect_adrift5_by_header() {
+        let mut data = vec![0u8; 32];
+        data[0..4].copy_from_slice(b"\x3C\x42\x3F\xC9");
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Adrift5);
+    }
+
+    #[test]
+    fn test_detect_unknown_small_file() {
+        let data = vec![0u8; 2]; // Too small
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Unknown);
+    }
+
+    #[test]
+    fn test_detect_unknown_random_data() {
+        let data = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22];
+        let file = create_test_file(&data);
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Unknown);
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_zcode() {
+        assert_eq!(detect_format_by_extension(Path::new("game.z5")), GameFormat::ZCode);
+        assert_eq!(detect_format_by_extension(Path::new("game.z8")), GameFormat::ZCode);
+        assert_eq!(detect_format_by_extension(Path::new("game.dat")), GameFormat::ZCode);
+        assert_eq!(detect_format_by_extension(Path::new("/path/to/game.Z5")), GameFormat::ZCode); // Case insensitive
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_glulx() {
+        assert_eq!(detect_format_by_extension(Path::new("game.ulx")), GameFormat::Glulx);
+        assert_eq!(detect_format_by_extension(Path::new("game.ULX")), GameFormat::Glulx);
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_tads() {
+        assert_eq!(detect_format_by_extension(Path::new("game.gam")), GameFormat::Tads);
+        assert_eq!(detect_format_by_extension(Path::new("game.t3")), GameFormat::Tads);
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_hugo() {
+        assert_eq!(detect_format_by_extension(Path::new("game.hex")), GameFormat::Hugo);
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_adrift() {
+        assert_eq!(detect_format_by_extension(Path::new("game.taf")), GameFormat::Adrift);
+        assert_eq!(detect_format_by_extension(Path::new("game.adrift")), GameFormat::Adrift);
+    }
+
+    #[test]
+    fn test_detect_format_by_extension_unknown() {
+        assert_eq!(detect_format_by_extension(Path::new("game.txt")), GameFormat::Unknown);
+        assert_eq!(detect_format_by_extension(Path::new("game.zip")), GameFormat::Unknown);
+        assert_eq!(detect_format_by_extension(Path::new("game")), GameFormat::Unknown);
+    }
+
+    #[test]
+    fn test_detect_format_nonexistent_file() {
+        let result = detect_format_by_header(Path::new("/nonexistent/file.z5"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_blorb_format() {
+        // Create a minimal Blorb file with Glulx executable
+        let mut data = vec![0u8; 256];
+        data[0..4].copy_from_slice(b"FORM");
+        data[4..8].copy_from_slice(&100u32.to_be_bytes()); // Size
+        data[8..12].copy_from_slice(b"IFRS");
+        data[12..16].copy_from_slice(b"RIdx");
+        data[16..20].copy_from_slice(&32u32.to_be_bytes()); // RIdx size
+        data[20..24].copy_from_slice(&1u32.to_be_bytes()); // Resource count
+        data[24..28].copy_from_slice(b"Exec");
+        data[28..32].copy_from_slice(&0u32.to_be_bytes()); // Resource number
+        data[32..36].copy_from_slice(&64u32.to_be_bytes()); // Offset to executable
+        data[64..68].copy_from_slice(b"Glul");
+        
+        let file = create_test_file(&data);
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Glulx);
+    }
+
+    #[test]
+    fn test_detect_zip_with_adrift_extension() {
+        let mut data = vec![0u8; 32];
+        data[0..4].copy_from_slice(b"PK\x03\x04"); // ZIP signature
+        
+        let mut file = NamedTempFile::with_suffix(".adrift").expect("Failed to create temp file");
+        file.write_all(&data).expect("Failed to write test data");
+        file.flush().expect("Failed to flush file");
+        
+        let format = detect_format_by_header(file.path()).unwrap();
+        assert_eq!(format, GameFormat::Adrift);
+    }
+}

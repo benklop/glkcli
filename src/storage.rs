@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -31,6 +32,16 @@ pub struct LocalGame {
     pub cover_art_path: Option<PathBuf>,
 }
 
+impl fmt::Display for LocalGame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} by {}", self.title, self.author)?;
+        if let Some(format) = &self.format {
+            write!(f, " ({})", format)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveFile {
     pub game_tuid: String,
@@ -39,6 +50,16 @@ pub struct SaveFile {
     pub save_date: SystemTime,
     pub file_size: u64,
     pub description: Option<String>,
+}
+
+impl fmt::Display for SaveFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.save_name)?;
+        if let Some(desc) = &self.description {
+            write!(f, " - {}", desc)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -44,4 +44,51 @@ mod tests {
         let input = "Plain text with no entities";
         assert_eq!(decode_html_entities(input), input);
     }
+
+    #[test]
+    fn test_decode_multiple_amp() {
+        let input = "&amp;&amp;&amp;";
+        let expected = "&&&";
+        assert_eq!(decode_html_entities(input), expected);
+    }
+
+    #[test]
+    fn test_decode_mixed_entities() {
+        let input = "She said &quot;Hello!&quot; &amp; waved goodbye.";
+        let expected = "She said \"Hello!\" & waved goodbye.";
+        assert_eq!(decode_html_entities(input), expected);
+    }
+
+    #[test]
+    fn test_decode_apostrophe_variations() {
+        assert_eq!(decode_html_entities("&#39;"), "'");
+        assert_eq!(decode_html_entities("&#x27;"), "'");
+        assert_eq!(decode_html_entities("&apos;"), "'");
+    }
+
+    #[test]
+    fn test_decode_empty_string() {
+        assert_eq!(decode_html_entities(""), "");
+    }
+
+    #[test]
+    fn test_decode_only_entities() {
+        assert_eq!(decode_html_entities("&quot;&amp;&#039;"), "\"&'");
+    }
+
+    #[test]
+    fn test_decode_incomplete_entity() {
+        // html-escape crate should handle these gracefully
+        let input = "&quot";
+        let result = decode_html_entities(input);
+        // The exact behavior depends on html-escape, but it should handle it
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_decode_text_with_gt_lt() {
+        let input = "&lt;tag&gt; &amp; more";
+        let expected = "<tag> & more";
+        assert_eq!(decode_html_entities(input), expected);
+    }
 }
