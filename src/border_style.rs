@@ -11,7 +11,6 @@ use std::env;
 /// Environment variables checked (in order):
 /// - GLKCLI_BORDER_STYLE: "plain" or "unicode" (explicit control)
 /// - LC_ALL / LANG: If set to "C" or doesn't contain "UTF", uses plain
-/// - TERM: If "linux" or "dumb", uses plain
 ///
 /// # Returns
 ///
@@ -49,24 +48,8 @@ pub fn get_border_type() -> BorderType {
         }
     }
 
-    // Check terminal type
-    if let Ok(term) = env::var("TERM") {
-        match term.to_lowercase().as_str() {
-            "linux" | "dumb" | "vt100" | "vt220" => return BorderType::Plain,
-            _ => {}
-        }
-    }
-
     // Default to Unicode (rounded borders look nicer)
     BorderType::Rounded
-}
-
-/// Check if the terminal likely supports Unicode
-///
-/// This is a helper function that returns true if the terminal
-/// appears to support UTF-8/Unicode characters.
-pub fn supports_unicode() -> bool {
-    matches!(get_border_type(), BorderType::Rounded)
 }
 
 #[cfg(test)]
@@ -106,27 +89,5 @@ mod tests {
         env::set_var("LC_ALL", "en_US.UTF-8");
         assert!(matches!(get_border_type(), BorderType::Rounded));
         env::remove_var("LC_ALL");
-    }
-
-    #[test]
-    #[serial]
-    fn test_linux_console() {
-        env::remove_var("GLKCLI_BORDER_STYLE");
-        env::remove_var("LC_ALL");
-        env::set_var("TERM", "linux");
-        assert!(matches!(get_border_type(), BorderType::Plain));
-        env::remove_var("TERM");
-    }
-
-    #[test]
-    #[serial]
-    fn test_supports_unicode() {
-        env::set_var("GLKCLI_BORDER_STYLE", "plain");
-        assert!(!supports_unicode());
-        
-        env::set_var("GLKCLI_BORDER_STYLE", "unicode");
-        assert!(supports_unicode());
-        
-        env::remove_var("GLKCLI_BORDER_STYLE");
     }
 }
