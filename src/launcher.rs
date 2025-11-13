@@ -150,7 +150,16 @@ impl Launcher {
     }
 
     fn find_interpreter_path(&self, interpreter_name: &str) -> Option<PathBuf> {
-        // First check if it exists in the current build directory (for development)
+        // First check configured installation directory (set at compile time)
+        // This is typically /usr/share/glkterm/bin for system installations
+        if let Some(install_dir) = option_env!("GLKTERM_BIN_DIR") {
+            let install_path = PathBuf::from(install_dir).join(interpreter_name);
+            if install_path.exists() {
+                return Some(install_path);
+            }
+        }
+
+        // Then check if it exists in the current build directory (for development)
         let build_paths = [
             format!("./build/terps/{}", interpreter_name),
             format!("./terps/{}", interpreter_name),
@@ -164,7 +173,7 @@ impl Launcher {
             }
         }
 
-        // Check PATH
+        // Finally check PATH
         if let Ok(path_env) = env::var("PATH") {
             for dir in path_env.split(':') {
                 let full_path = PathBuf::from(dir).join(interpreter_name);
@@ -279,9 +288,9 @@ mod tests {
         
         // Create a temporary directory and add it to PATH for testing
         let temp_dir = TempDir::new().unwrap();
-        let interpreter_path = temp_dir.path().join("test_interpreter");
+        let interpreter_path = temp_dir.path().join("test_interpreter_xyz123");
         
-        // Create a dummy executable file
+        // Create a dummy executable file with unique name to avoid conflicts
         std::fs::write(&interpreter_path, "#!/bin/sh\necho test").unwrap();
         #[cfg(unix)]
         {
@@ -295,7 +304,7 @@ mod tests {
         let original_path = env::var("PATH").unwrap_or_default();
         env::set_var("PATH", format!("{}:{}", temp_dir.path().display(), original_path));
         
-        let result = launcher.find_interpreter_path("test_interpreter");
+        let result = launcher.find_interpreter_path("test_interpreter_xyz123");
         
         // Restore original PATH
         env::set_var("PATH", original_path);
