@@ -1,12 +1,25 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::Command;
+use nix::unistd::geteuid;
+
+/// Check if we're running as root
+fn is_root() -> bool {
+    geteuid().is_root()
+}
 
 /// Check if CRIU is available and usable on this system
 pub fn check_criu_available() -> Result<()> {
     // Try to run 'criu check'
-    let output = Command::new("criu")
-        .arg("check")
+    let mut cmd = Command::new("criu");
+    cmd.arg("check");
+    
+    // Add --unprivileged flag if not running as root
+    if !is_root() {
+        cmd.arg("--unprivileged");
+    }
+    
+    let output = cmd
         .output()
         .context("Failed to execute 'criu check'. Is CRIU installed?")?;
 
@@ -15,7 +28,9 @@ pub fn check_criu_available() -> Result<()> {
         return Err(anyhow!(
             "CRIU check failed. You may need to:\n\
              1. Install CRIU: sudo apt install criu\n\
-             2. Set capabilities: sudo setcap cap_sys_admin,cap_sys_ptrace,cap_dac_override+eip $(which criu)\n\
+             2. Set capabilities: sudo setcap cap_checkpoint_restore+eip $(readlink -f $(which criu))\n\
+                (For older kernels < 5.9: sudo setcap cap_sys_admin,cap_sys_ptrace,cap_dac_override+eip $(readlink -f $(which criu)))\n\
+                Note: Use 'readlink -f' to resolve symlinks\n\
              3. Or run with sufficient privileges\n\
              Error: {}",
             stderr
@@ -60,6 +75,11 @@ pub fn checkpoint_process(pid: i32, checkpoint_dir: &Path, leave_running: bool) 
 
     if leave_running {
         cmd.arg("--leave-running");
+    }
+    
+    // Add --unprivileged flag if not running as root
+    if !is_root() {
+        cmd.arg("--unprivileged");
     }
 
     // Execute CRIU dump
@@ -115,6 +135,11 @@ pub fn restore_checkpoint(checkpoint_dir: &Path) -> Result<i32> {
         .arg("restore.log")
         .arg("-v4")
         .arg("--restore-detached"); // Don't block on completion
+    
+    // Add --unprivileged flag if not running as root
+    if !is_root() {
+        cmd.arg("--unprivileged");
+    }
 
     // Execute CRIU restore
     let output = cmd

@@ -31,7 +31,7 @@ zip = "0.5"
 tempfile = "3.8"
 html-escape = "0.2"
 portable-pty = "0.8"
-nix = { version = "0.27", features = ["signal", "process", "ioctl", "term"] }
+nix = { version = "0.27", features = ["signal", "process", "ioctl", "term", "user"] }
 
 [dev-dependencies]
 mockito = "1.2"

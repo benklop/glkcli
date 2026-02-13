@@ -21,7 +21,9 @@ This launcher now supports process-level checkpoints using CRIU (Checkpoint/Rest
 - CRIU installed: `sudo apt install criu` (Debian/Ubuntu) or equivalent
 - Proper capabilities configured (one of):
   - Run glkcli with sufficient privileges
-  - Set capabilities: `sudo setcap cap_sys_admin,cap_sys_ptrace,cap_dac_override+eip $(which criu)`
+  - Set capabilities: `sudo setcap cap_checkpoint_restore+eip $(readlink -f $(which criu))` (kernel 5.9+)
+  - For older kernels: `sudo setcap cap_sys_admin,cap_sys_ptrace,cap_dac_override+eip $(readlink -f $(which criu))`
+  - Note: Use `readlink -f` to resolve symlinks to the actual binary
 
 ### Usage During Gameplay
 
