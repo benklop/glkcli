@@ -92,14 +92,20 @@ pub async fn run_tui(debug: bool, assume_online: bool) -> Result<()> {
         DisableMouseCapture
     ).context("Failed to restore terminal")?;
     terminal.show_cursor().context("Failed to show cursor")?;
+    
+    // Explicitly drop terminal to ensure proper cleanup
+    drop(terminal);
 
     result
 }
 
 impl TuiApp {
     async fn run<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        // Clear terminal on startup to ensure clean initial state
+        terminal.clear()?;
+        
         loop {
-            // If we need a full redraw (e.g., after launching a game), clear and reset the terminal
+            // If we need a full redraw (e.g., after launching a game), clear the terminal
             if self.needs_redraw {
                 terminal.clear()?;
                 self.needs_redraw = false;
@@ -122,6 +128,7 @@ impl TuiApp {
                 }
             }
             
+            // Draw the UI - ratatui's double-buffering will handle efficient updates
             terminal.draw(|f| self.ui(f))?;
 
             // Poll for events with a timeout to allow status message clearing
@@ -976,9 +983,8 @@ impl TuiApp {
     async fn launch_game(&mut self, game: &LocalGame) -> Result<()> {
         // Temporarily disable raw mode and restore terminal before launching game
         disable_raw_mode().context("Failed to disable raw mode")?;
-        let mut stdout = io::stdout();
         execute!(
-            stdout,
+            io::stdout(),
             LeaveAlternateScreen,
             DisableMouseCapture,
             crossterm::cursor::Show
@@ -990,7 +996,7 @@ impl TuiApp {
         // Re-enable raw mode and alternate screen after game exits
         enable_raw_mode().context("Failed to re-enable raw mode")?;
         execute!(
-            stdout,
+            io::stdout(),
             EnterAlternateScreen,
             EnableMouseCapture,
             crossterm::cursor::Hide
