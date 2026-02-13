@@ -13,6 +13,8 @@ mod app;
 mod ui;
 mod utils;
 mod border_style;
+mod pty;
+mod criu;
 
 use launcher::*;
 

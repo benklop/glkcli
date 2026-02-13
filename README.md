@@ -5,6 +5,64 @@ A memory-safe Rust launcher for glkterm based interactive fiction interpreters.
 ## Features
 
 - Automatic detection of game file formats by header and extension
+- TUI browser for discovering and downloading games from IFDB
+- Local game library management
+- **CRIU-based checkpoint system for uniform save/restore across all game types**
+- Playtime tracking per game
+- Hotkey support during gameplay (F1/F2/F3)
+
+## CRIU Checkpoints (New!)
+
+This launcher now supports process-level checkpoints using CRIU (Checkpoint/Restore In Userspace). This provides uniform save/restore functionality across all interpreter types, with automatic playtime tracking.
+
+### Requirements
+
+- **Linux only** (CRIU does not support macOS or Windows)
+- CRIU installed: `sudo apt install criu` (Debian/Ubuntu) or equivalent
+- Proper capabilities configured (one of):
+  - Run glkcli with sufficient privileges
+  - Set capabilities: `sudo setcap cap_sys_admin,cap_sys_ptrace,cap_dac_override+eip $(which criu)`
+
+### Usage During Gameplay
+
+While playing any game:
+
+- **F1**: Create checkpoint and exit to menu
+- **F2**: Quick-save (checkpoint) and continue playing
+- **F3**: Quick-reload from last checkpoint
+- **Escape**: Exit prompt (future: will ask to save)
+
+### Managing Checkpoints
+
+From the TUI "My Games" tab:
+
+1. Select a game with arrow keys
+2. Press **c** to view checkpoints for that game
+3. Use arrow keys to navigate checkpoints
+4. Press **Enter** to load a checkpoint
+5. Press **Esc** to close checkpoint browser
+
+Each checkpoint displays:
+- Checkpoint name
+- Creation date/time
+- Total playtime (HH:MM:SS format)
+
+### How It Works
+
+CRIU creates process-level snapshots of the running interpreter, including:
+- All memory state
+- Open file descriptors
+- Terminal state
+- Game progress
+
+This means you can save at any point during gameplay, even if the game itself doesn't support saving.
+
+### Limitations
+
+- CRIU restore with PTY re-attachment is not yet fully implemented (F3 quick-reload has limitations)
+- No in-game dialog overlays yet (F1/Escape just exit, no confirmation)
+- Checkpoint files can be 5-50MB each depending on interpreter
+- Requires Linux kernel with CRIU support
 
 ## Supported Game Formats
 

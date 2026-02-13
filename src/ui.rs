@@ -73,6 +73,7 @@ impl TuiApp {
         match self.state {
             AppState::GameDetails => self.render_game_details(f, area),
             AppState::SaveFilesDialog => self.render_saves_dialog(f, area),
+            AppState::CheckpointBrowser => self.render_checkpoints_dialog(f, area),
             _ => {
                 match self.current_tab {
                     0 => {
@@ -164,7 +165,7 @@ impl TuiApp {
         let list = List::new(items)
             .block(create_block()
                 .borders(Borders::ALL)
-                .title("Downloaded Games (Enter: Launch | v: View Saves | x: Delete)"))
+                .title("Downloaded Games (Enter: Launch | c: Checkpoints | v: View Saves | x: Delete)"))
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol("> ");
 
@@ -221,6 +222,68 @@ impl TuiApp {
             .highlight_symbol("> ");
 
         f.render_stateful_widget(list, area, &mut self.save_selection);
+    }
+
+    pub(crate) fn render_checkpoints_dialog(&mut self, f: &mut Frame, area: Rect) {
+        if self.checkpoints.is_empty() {
+            // Show helpful message when no checkpoints
+            let msg = "No checkpoints found for this game.\n\n\
+                      While playing:\n\
+                      • Press F1 to save and exit\n\
+                      • Press F2 to quick-save and continue\n\
+                      • Press F3 to quick-reload last checkpoint\n\n\
+                      Press Esc to close.";
+            
+            let paragraph = Paragraph::new(msg)
+                .block(create_block()
+                    .borders(Borders::ALL)
+                    .title("Checkpoints"))
+                .wrap(Wrap { trim: true });
+            f.render_widget(paragraph, area);
+            return;
+        }
+        
+        let items: Vec<ListItem> = self.checkpoints
+            .iter()
+            .map(|checkpoint| {
+                let date = checkpoint.created_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|d| {
+                        chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                    })
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "Unknown date".to_string());
+                
+                // Format playtime as HH:MM:SS
+                let hours = checkpoint.playtime_seconds / 3600;
+                let minutes = (checkpoint.playtime_seconds % 3600) / 60;
+                let seconds = checkpoint.playtime_seconds % 60;
+                let playtime = format!("{}:{:02}:{:02}", hours, minutes, seconds);
+                    
+                ListItem::new(format!("{} - {} | Playtime: {}", 
+                    checkpoint.name, date, playtime))
+            })
+            .collect();
+
+        let title = if let Some(i) = self.downloaded_selection.selected() {
+            if let Some(game) = self.downloaded_games.get(i) {
+                format!("Checkpoints for: {} (Enter: Load, Esc: Close)", game.title)
+            } else {
+                "Checkpoints (Enter: Load, Esc: Close)".to_string()
+            }
+        } else {
+            "Checkpoints (Enter: Load, Esc: Close)".to_string()
+        };
+
+        let list = List::new(items)
+            .block(create_block()
+                .borders(Borders::ALL)
+                .title(title))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("> ");
+
+        f.render_stateful_widget(list, area, &mut self.checkpoint_selection);
     }
 
     /// Render the game details view

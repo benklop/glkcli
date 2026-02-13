@@ -58,6 +58,21 @@ use crate::storage::{LocalGame, SaveFile};
 /// * `debug` - Enable debug logging to ~/.glkcli/debug.log
 /// * `assume_online` - Assume network is available (skip connectivity check)
 pub async fn run_tui(debug: bool, assume_online: bool) -> Result<()> {
+    // Check CRIU availability
+    if let Err(e) = crate::criu::check_criu_available() {
+        eprintln!("Warning: CRIU is not available or not properly configured.");
+        eprintln!("{}", e);
+        eprintln!("\nCheckpoint features will not be available.");
+        eprintln!("You can still use glkcli without CRIU, but you won't be able to:");
+        eprintln!("  - Create checkpoints with F1/F2 during gameplay");
+        eprintln!("  - Quick-reload with F3");
+        eprintln!("  - Track playtime accurately");
+        eprintln!("\nPress Enter to continue or Ctrl+C to exit...");
+        
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+    }
+    
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -196,6 +211,7 @@ impl TuiApp {
             KeyCode::Char('i') => self.handle_import().await?,
             KeyCode::Char('x') => self.handle_delete().await?,
             KeyCode::Char('v') => self.handle_view_saves().await?,
+            KeyCode::Char('c') => self.handle_view_checkpoints().await?,
             KeyCode::Char('r') => self.refresh_current_view().await?,
             KeyCode::Esc => self.handle_escape(),
             _ => {}
@@ -281,6 +297,22 @@ impl TuiApp {
                 None => 0,
             };
             self.save_selection.select(Some(i));
+            return Ok(());
+        }
+        
+        // Handle checkpoint browser separately
+        if self.state == AppState::CheckpointBrowser {
+            let i = match self.checkpoint_selection.selected() {
+                Some(i) => {
+                    if i == 0 {
+                        self.checkpoints.len().saturating_sub(1)
+                    } else {
+                        i - 1
+                    }
+                }
+                None => 0,
+            };
+            self.checkpoint_selection.select(Some(i));
             return Ok(());
         }
         
@@ -377,6 +409,22 @@ impl TuiApp {
             return Ok(());
         }
         
+        // Handle checkpoint browser separately
+        if self.state == AppState::CheckpointBrowser {
+            let i = match self.checkpoint_selection.selected() {
+                Some(i) => {
+                    if i >= self.checkpoints.len().saturating_sub(1) {
+                        0
+                    } else {
+                        i + 1
+                    }
+                }
+                None => 0,
+            };
+            self.checkpoint_selection.select(Some(i));
+            return Ok(());
+        }
+        
         match self.current_tab {
             0 => {
                 if self.is_online {
@@ -431,6 +479,16 @@ impl TuiApp {
     }
 
     async fn handle_enter(&mut self) -> Result<()> {
+        // Handle checkpoint browser separately
+        if self.state == AppState::CheckpointBrowser {
+            if let Some(i) = self.checkpoint_selection.selected() {
+                if let Some(checkpoint) = self.checkpoints.get(i).cloned() {
+                    self.load_checkpoint(&checkpoint).await?;
+                }
+            }
+            return Ok(());
+        }
+        
         // Handle save files dialog separately
         if self.state == AppState::SaveFilesDialog {
             if let Some(i) = self.save_selection.selected() {
@@ -543,6 +601,24 @@ impl TuiApp {
                     let tuid = game.tuid.clone();
                     self.refresh_save_files(&tuid).await?;
                     self.state = AppState::SaveFilesDialog;
+                } else {
+                    self.set_status_message("No game selected".to_string());
+                }
+            } else {
+                self.set_status_message("No game selected".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_view_checkpoints(&mut self) -> Result<()> {
+        // Only works in My Games tab
+        if self.current_tab == 1 || (self.current_tab == 0 && !self.is_online) {
+            if let Some(i) = self.downloaded_selection.selected() {
+                if let Some(game) = self.downloaded_games.get(i) {
+                    let tuid = game.tuid.clone();
+                    self.refresh_checkpoints(&tuid).await?;
+                    self.state = AppState::CheckpointBrowser;
                 } else {
                     self.set_status_message("No game selected".to_string());
                 }
@@ -1034,6 +1110,62 @@ impl TuiApp {
         Ok(())
     }
 
+    async fn load_checkpoint(&mut self, checkpoint: &crate::storage::Checkpoint) -> Result<()> {
+        // Find the game associated with this checkpoint
+        if let Some(game) = self.downloaded_games.iter().find(|g| g.tuid == checkpoint.game_tuid).cloned() {
+            self.set_status_message(format!("Restoring checkpoint: {}", checkpoint.name));
+            
+            // Temporarily disable raw mode and restore terminal before launching game
+            disable_raw_mode().context("Failed to disable raw mode")?;
+            execute!(
+                io::stdout(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                crossterm::cursor::Show
+            ).context("Failed to restore terminal")?;
+            
+            // Detect game format
+            let format = self.launcher.detect_format(&game.file_path)?;
+            
+            // Launch the game with checkpoint restoration
+            let launch_result = self.launcher.run_game_with_checkpoints(
+                &game.file_path,
+                format,
+                &game.tuid,
+                &self.storage,
+                Some(checkpoint.id.clone()),
+            );
+            
+            // Re-enable raw mode and alternate screen after game exits
+            enable_raw_mode().context("Failed to re-enable raw mode")?;
+            execute!(
+                io::stdout(),
+                EnterAlternateScreen,
+                EnableMouseCapture,
+                crossterm::cursor::Hide
+            ).context("Failed to re-setup terminal")?;
+            
+            match launch_result {
+                Ok(_) => {
+                    // Record that the game was played
+                    let _ = self.storage.record_game_played(&game.tuid);
+                    self.set_status_message("Game session ended".to_string());
+                    // Refresh checkpoints to show any new ones created
+                    let _ = self.refresh_checkpoints(&game.tuid).await;
+                }
+                Err(e) => {
+                    self.set_status_message(format!("Failed to restore checkpoint: {}", e));
+                }
+            }
+            
+            // Mark that we need a full terminal redraw
+            self.needs_redraw = true;
+        } else {
+            self.set_status_message("Game not found for this checkpoint".to_string());
+        }
+        Ok(())
+    }
+
     async fn refresh_downloaded_games(&mut self) -> Result<()> {
         match self.storage.get_downloaded_games() {
             Ok(games) => {
@@ -1063,6 +1195,23 @@ impl TuiApp {
             }
             Err(e) => {
                 self.set_status_message(format!("Failed to load save files: {}", e));
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_checkpoints(&mut self, tuid: &str) -> Result<()> {
+        match self.storage.get_checkpoints(tuid) {
+            Ok(checkpoints) => {
+                self.checkpoints = checkpoints;
+                self.checkpoint_selection.select(if self.checkpoints.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                });
+            }
+            Err(e) => {
+                self.set_status_message(format!("Failed to load checkpoints: {}", e));
             }
         }
         Ok(())
@@ -1115,6 +1264,11 @@ impl TuiApp {
                 self.state = AppState::Browse;
                 self.save_files.clear();
                 self.save_selection = ListState::default();
+            }
+            AppState::CheckpointBrowser => {
+                self.state = AppState::Browse;
+                self.checkpoints.clear();
+                self.checkpoint_selection = ListState::default();
             }
             _ => {
                 self.status_message = None;
