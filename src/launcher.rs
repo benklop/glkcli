@@ -568,28 +568,10 @@ impl Launcher {
         let checkpoint_dir = storage.create_checkpoint_dir(tuid, &checkpoint_id)?;
         
         log::info!("Creating checkpoint: {} (playtime: {}s, leave_running: {})", name, playtime_seconds, leave_running);
-        
-        // Toggle sound OFF before checkpoint using SIGUSR1
-        // This closes audio connections that CRIU can't checkpoint
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-        
-        log::info!("Disabling sound before checkpoint (SIGUSR1 to PID {})", pty.pid());
-        kill(Pid::from_raw(pty.pid()), Signal::SIGUSR1)
-            .context("Failed to send SIGUSR1 to disable sound")?;
-        
-        // Give the process a moment to close audio connections
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        
-        // Create CRIU checkpoint
+
+        // CRIU handles process freezing/thawing internally via SIGSTOP/SIGCONT.
+        // No pre/post signalling needed on our side.
         criu::checkpoint_process(pty.pid(), &checkpoint_dir, leave_running)?;
-        
-        // If process is still running, toggle sound back ON
-        if leave_running {
-            log::info!("Re-enabling sound after checkpoint (SIGUSR1 to PID {})", pty.pid());
-            kill(Pid::from_raw(pty.pid()), Signal::SIGUSR1)
-                .context("Failed to send SIGUSR1 to re-enable sound")?;
-        }
         
         // Save checkpoint metadata
         let checkpoint = Checkpoint {

@@ -76,7 +76,7 @@ pub fn checkpoint_process(pid: i32, checkpoint_dir: &Path, leave_running: bool) 
     if leave_running {
         cmd.arg("--leave-running");
     }
-    
+
     // Add --unprivileged flag if not running as root
     if !is_root() {
         cmd.arg("--unprivileged");
@@ -135,7 +135,7 @@ pub fn restore_checkpoint(checkpoint_dir: &Path) -> Result<i32> {
         .arg("restore.log")
         .arg("-v4")
         .arg("--restore-detached"); // Don't block on completion
-    
+
     // Add --unprivileged flag if not running as root
     if !is_root() {
         cmd.arg("--unprivileged");
@@ -145,7 +145,7 @@ pub fn restore_checkpoint(checkpoint_dir: &Path) -> Result<i32> {
         // Allow external unix sockets (don't restore them)
         cmd.arg("--ext-unix-sk");
     }
-    
+
     // Skip network namespace operations for processes without network access
     cmd.arg("--empty-ns")
         .arg("net");
