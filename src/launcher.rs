@@ -361,7 +361,7 @@ impl Launcher {
                                 let total_playtime = cumulative_playtime + elapsed;
                                 
                                 // Create checkpoint - CRIU will stop the process
-                                if let Err(e) = self.create_checkpoint_embedded(
+                                match self.create_checkpoint_embedded(
                                     pty,
                                     tuid,
                                     storage,
@@ -369,10 +369,14 @@ impl Launcher {
                                     "Auto-save (F1)",
                                     false  // CRIU stops the process
                                 ) {
-                                    log::error!("Failed to create checkpoint: {}", e);
+                                    Ok(_) => {
+                                        // Don't send SIGKILL - CRIU already stopped the process
+                                        log::info!("Checkpoint created, process stopped by CRIU");
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to create checkpoint: {}", e);
+                                    }
                                 }
-                                // Don't send SIGKILL - CRIU already stopped the process
-                                log::info!("Checkpoint created, process stopped by CRIU");
                                 
                                 break;
                             }
