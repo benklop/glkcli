@@ -351,12 +351,12 @@ impl EmbeddedPty {
     pub fn render(&self, frame: &mut Frame) {
         let size = frame.size();
 
-        // Split the screen: terminal area + status bar (3 lines)
+        // Split the screen: terminal area + status bar (2 lines: border + content)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(10),      // Terminal display
-                Constraint::Length(3),    // Status bar
+                Constraint::Length(2),    // Status bar
             ])
             .split(size);
 
@@ -416,7 +416,7 @@ impl EmbeddedPty {
                 Span::raw("o"),
             ]);
 
-            let paragraph = Paragraph::new(vec![Line::raw(""), confirm_line])
+            let paragraph = Paragraph::new(vec![confirm_line])
                 .block(
                     Block::default()
                         .borders(Borders::TOP)
@@ -451,7 +451,7 @@ impl EmbeddedPty {
                 Span::raw("o"),
             ]);
 
-            let paragraph = Paragraph::new(vec![Line::raw(""), confirm_line])
+            let paragraph = Paragraph::new(vec![confirm_line])
                 .block(
                     Block::default()
                         .borders(Borders::TOP)
@@ -475,13 +475,6 @@ impl EmbeddedPty {
 
             let status_line = Line::from(vec![
                 Span::styled(
-                    format!(" {} ", self.game_name),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" │ "),
-                Span::styled(
                     format!("⏱ {}", time_str),
                     Style::default().fg(Color::Yellow),
                 ),
@@ -496,7 +489,7 @@ impl EmbeddedPty {
                 Span::raw(" Quit"),
             ]);
 
-            let paragraph = Paragraph::new(vec![Line::raw(""), status_line])
+            let paragraph = Paragraph::new(vec![status_line])
                 .block(
                     Block::default()
                         .borders(Borders::TOP)
@@ -511,7 +504,7 @@ impl EmbeddedPty {
     /// Resize the terminal
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         // Reserve space for status bar
-        let term_rows = rows.saturating_sub(3).max(10);
+        let term_rows = rows.saturating_sub(2).max(10);
         
         if let Ok(mut parser) = self.parser.lock() {
             *parser = vt100::Parser::new(term_rows, cols, 0);
