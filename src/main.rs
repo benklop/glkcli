@@ -14,6 +14,7 @@ mod ui;
 mod utils;
 mod border_style;
 mod pty;
+mod pty_embedded;
 mod criu;
 
 use launcher::*;

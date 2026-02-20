@@ -65,13 +65,13 @@ pub fn checkpoint_process(pid: i32, checkpoint_dir: &Path, leave_running: bool) 
     let mut cmd = Command::new("criu");
     cmd.arg("dump")
         .arg("--shell-job") // For processes attached to terminal
+        .arg("--tcp-close")
         .arg("--tree")
         .arg(pid.to_string())
         .arg("--images-dir")
         .arg(checkpoint_dir)
         .arg("--log-file")
-        .arg("dump.log")
-        .arg("-v4"); // Verbose logging for debugging
+        .arg("dump.log");
 
     if leave_running {
         cmd.arg("--leave-running");
@@ -139,7 +139,16 @@ pub fn restore_checkpoint(checkpoint_dir: &Path) -> Result<i32> {
     // Add --unprivileged flag if not running as root
     if !is_root() {
         cmd.arg("--unprivileged");
+        // Close TCP connections instead of trying to restore them
+        // This avoids needing permissions for nftables/iptables manipulation
+        cmd.arg("--tcp-close");
+        // Allow external unix sockets (don't restore them)
+        cmd.arg("--ext-unix-sk");
     }
+    
+    // Skip network namespace operations for processes without network access
+    cmd.arg("--empty-ns")
+        .arg("net");
 
     // Execute CRIU restore
     let output = cmd

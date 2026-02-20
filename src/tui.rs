@@ -1057,26 +1057,45 @@ impl TuiApp {
     }
 
     async fn launch_game(&mut self, game: &LocalGame) -> Result<()> {
-        // Temporarily disable raw mode and restore terminal before launching game
+        // Temporarily leave the TUI's alternate screen
+        // Note: run_game_embedded manages its own terminal state
         disable_raw_mode().context("Failed to disable raw mode")?;
         execute!(
             io::stdout(),
             LeaveAlternateScreen,
-            DisableMouseCapture,
-            crossterm::cursor::Show
-        ).context("Failed to restore terminal")?;
+            DisableMouseCapture
+        ).context("Failed to leave alternate screen")?;
         
-        // Launch the game
-        let launch_result = self.launcher.detect_and_run(&game.file_path, false);
+        // Detect game format
+        let format_result = self.launcher.detect_format(&game.file_path);
         
-        // Re-enable raw mode and alternate screen after game exits
+        let launch_result = match format_result {
+            Ok(format) => {
+                // Use embedded PTY with status bar showing playtime and key hints
+                // This manages its own terminal state (raw mode, alternate screen)
+                self.launcher.run_game_embedded(
+                    &game.file_path,
+                    format,
+                    &game.tuid,
+                    &self.storage,
+                    None, // Not restoring from a specific checkpoint
+                    &game.title,
+                )
+            }
+            Err(e) => {
+                // If format detection fails, fall back to old method
+                log::warn!("Format detection failed, using legacy launcher: {}", e);
+                self.launcher.detect_and_run(&game.file_path, false)
+            }
+        };
+        
+        // Re-enable raw mode and alternate screen for TUI
         enable_raw_mode().context("Failed to re-enable raw mode")?;
         execute!(
             io::stdout(),
             EnterAlternateScreen,
-            EnableMouseCapture,
-            crossterm::cursor::Hide
-        ).context("Failed to re-setup terminal")?;
+            EnableMouseCapture
+        ).context("Failed to re-enter alternate screen")?;
         
         match launch_result {
             Ok(_) => {
@@ -1115,35 +1134,34 @@ impl TuiApp {
         if let Some(game) = self.downloaded_games.iter().find(|g| g.tuid == checkpoint.game_tuid).cloned() {
             self.set_status_message(format!("Restoring checkpoint: {}", checkpoint.name));
             
-            // Temporarily disable raw mode and restore terminal before launching game
+            // Temporarily leave the TUI's alternate screen
             disable_raw_mode().context("Failed to disable raw mode")?;
             execute!(
                 io::stdout(),
                 LeaveAlternateScreen,
-                DisableMouseCapture,
-                crossterm::cursor::Show
-            ).context("Failed to restore terminal")?;
+                DisableMouseCapture
+            ).context("Failed to leave alternate screen")?;
             
             // Detect game format
             let format = self.launcher.detect_format(&game.file_path)?;
             
-            // Launch the game with checkpoint restoration
-            let launch_result = self.launcher.run_game_with_checkpoints(
+            // Launch the game with checkpoint restoration using embedded PTY
+            let launch_result = self.launcher.run_game_embedded(
                 &game.file_path,
                 format,
                 &game.tuid,
                 &self.storage,
                 Some(checkpoint.id.clone()),
+                &game.title,
             );
             
-            // Re-enable raw mode and alternate screen after game exits
+            // Re-enable raw mode and alternate screen for TUI
             enable_raw_mode().context("Failed to re-enable raw mode")?;
             execute!(
                 io::stdout(),
                 EnterAlternateScreen,
-                EnableMouseCapture,
-                crossterm::cursor::Hide
-            ).context("Failed to re-setup terminal")?;
+                EnableMouseCapture
+            ).context("Failed to re-enter alternate screen")?;
             
             match launch_result {
                 Ok(_) => {
