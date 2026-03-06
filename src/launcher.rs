@@ -598,7 +598,16 @@ impl Launcher {
     }
 
     fn find_interpreter_path(&self, interpreter_name: &str) -> Option<PathBuf> {
-        // First check configured installation directory (set at compile time)
+        // First check AppImage runtime: when running from AppImage, APPDIR is set
+        // and interpreters are at $APPDIR/usr/share/glkterm/bin
+        if let Ok(appdir) = env::var("APPDIR") {
+            let install_path = PathBuf::from(&appdir).join("usr/share/glkterm/bin").join(interpreter_name);
+            if install_path.exists() {
+                return install_path.canonicalize().ok();
+            }
+        }
+
+        // Then check configured installation directory (set at compile time)
         // This is typically /usr/share/glkterm/bin for system installations
         if let Some(install_dir) = option_env!("GLKTERM_BIN_DIR") {
             let install_path = PathBuf::from(install_dir).join(interpreter_name);

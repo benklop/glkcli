@@ -1,0 +1,131 @@
+name: Build AppImage
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  GLKTERM_REPO: https://github.com/benklop/glkterm.git
+  GLKTERM_BRANCH: main
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout glkcli
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libncurses-dev \
+            zlib1g-dev \
+            libsdl2-dev \
+            libsdl2-mixer-dev \
+            curl \
+            file
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Clone and build glkterm (interpreters)
+        run: |
+          git clone --depth 1 --branch ${{ env.GLKTERM_BRANCH }} ${{ env.GLKTERM_REPO }} glkterm-src
+          cd glkterm-src
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SOUND=ON \
+            -DBUILD_INTERPRETERS=ON
+          make -j$(nproc)
+          echo "Built interpreters:"
+          ls -la terps/bin/
+
+      - name: Build glkcli
+        run: |
+          cargo build --release
+          strip target/release/glkcli
+
+      - name: Create AppDir structure
+        run: |
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/glkterm/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/glkcli AppDir/usr/bin/
+          cp glkterm-src/build/terps/bin/* AppDir/usr/share/glkterm/bin/
+          chmod +x AppDir/usr/share/glkterm/bin/*
+
+          # Create .desktop file for AppImage
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=glkcli' \
+            'Comment=Interactive Fiction game launcher' \
+            'Exec=glkcli' \
+            'Icon=glkcli' \
+            'Terminal=true' \
+            'Categories=Game;Utility;' \
+            > AppDir/glkcli.desktop
+
+          # Create a minimal placeholder icon if none exists in repo
+          if [ -f glkcli.png ]; then
+            cp glkcli.png AppDir/glkcli.png
+          else
+            # Minimal valid 1x1 PNG (transparent)
+            printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82' > AppDir/glkcli.png
+          fi
+
+      - name: Download linuxdeploy
+        run: |
+          curl -sL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o linuxdeploy.AppImage
+          chmod +x linuxdeploy.AppImage
+          curl -sL https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage -o linuxdeploy-plugin-appimage.AppImage
+          chmod +x linuxdeploy-plugin-appimage.AppImage
+
+      - name: Deploy dependencies and create AppImage
+        env:
+          LINUXDEPLOY: $(pwd)/linuxdeploy.AppImage
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: |
+          # Build --executable args for all built interpreters
+          EXEC_ARGS="--executable AppDir/usr/bin/glkcli"
+          for terp in AppDir/usr/share/glkterm/bin/*; do
+            [ -f "$terp" ] && [ -x "$terp" ] && EXEC_ARGS="$EXEC_ARGS --executable $terp"
+          done
+
+          # Deploy glkcli and all interpreters with their libraries
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            $EXEC_ARGS \
+            --desktop-file AppDir/glkcli.desktop \
+            --icon-file AppDir/glkcli.png \
+            --output appimage
+
+      - name: Rename and verify AppImage
+        id: appimage
+        run: |
+          VERSION=$(grep 'version = ' Cargo.toml | grep -v rust-version | head -1 | sed 's/.*= *"\([^"]*\)".*/\1/')
+          APPIMAGE=$(ls glkcli*.AppImage 2>/dev/null | head -1)
+          FINAL_NAME="glkcli-${VERSION}-x86_64.AppImage"
+          if [ -n "$APPIMAGE" ] && [ "$APPIMAGE" != "$FINAL_NAME" ]; then
+            mv "$APPIMAGE" "$FINAL_NAME"
+          fi
+          ls -la *.AppImage
+          echo "name=$FINAL_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glkcli-AppImage
+          path: ${{ steps.appimage.outputs.name }}
