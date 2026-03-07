@@ -6,7 +6,7 @@
 use ratatui::widgets::ListState;
 
 use crate::ifdb::{IfdbClient, Game, GameDetails};
-use crate::storage::{GameStorage, LocalGame, SaveFile};
+use crate::storage::{GameStorage, LocalGame, SaveFile, Checkpoint};
 use crate::launcher::Launcher;
 use crate::network::NetworkChecker;
 
@@ -48,6 +48,10 @@ pub struct TuiApp {
     pub(crate) save_files: Vec<SaveFile>,
     /// Selected save file
     pub(crate) save_selection: ListState,
+    /// Checkpoints for current game
+    pub(crate) checkpoints: Vec<Checkpoint>,
+    /// Selected checkpoint
+    pub(crate) checkpoint_selection: ListState,
     /// Current game details being viewed
     pub(crate) current_game_details: Option<GameDetails>,
     /// Loading state
@@ -76,6 +80,8 @@ pub enum AppState {
     GameDetails,
     /// Showing save files dialog
     SaveFilesDialog,
+    /// Showing checkpoints browser
+    CheckpointBrowser,
     /// Downloading a game (transition state)
     Download,
     /// Viewing downloaded games
@@ -132,6 +138,8 @@ impl TuiApp {
             downloaded_selection: ListState::default(),
             save_files: Vec::new(),
             save_selection: ListState::default(),
+            checkpoints: Vec::new(),
+            checkpoint_selection: ListState::default(),
             current_game_details: None,
             loading: false,
             status_message: None,

@@ -62,11 +62,42 @@ impl fmt::Display for SaveFile {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub id: String,
+    pub game_tuid: String,
+    pub name: String,
+    pub checkpoint_path: PathBuf,
+    pub created_at: SystemTime,
+    pub playtime_seconds: u64,
+    pub description: Option<String>,
+}
+
+impl fmt::Display for Checkpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        
+        // Format playtime as HH:MM:SS
+        let hours = self.playtime_seconds / 3600;
+        let minutes = (self.playtime_seconds % 3600) / 60;
+        let seconds = self.playtime_seconds % 60;
+        write!(f, " ({}:{:02}:{:02})", hours, minutes, seconds)?;
+        
+        if let Some(desc) = &self.description {
+            write!(f, " - {}", desc)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageMetadata {
     pub version: u32,
     pub games: HashMap<String, LocalGame>,
-    pub saves: HashMap<String, Vec<SaveFile>>, // Key is game TUID
+    #[serde(default)]
+    pub saves: HashMap<String, Vec<SaveFile>>, // Key is game TUID (deprecated)
+    #[serde(default)]
+    pub checkpoints: HashMap<String, Vec<Checkpoint>>, // Key is game TUID
 }
 
 impl GameStorage {
@@ -99,6 +130,7 @@ impl GameStorage {
                 version: 1,
                 games: HashMap::new(),
                 saves: HashMap::new(),
+                checkpoints: HashMap::new(),
             });
         }
 
@@ -523,6 +555,86 @@ impl GameStorage {
         saves.sort_by(|a, b| b.save_date.cmp(&a.save_date));
 
         Ok(saves)
+    }
+
+    /// Get checkpoint directory for a specific game
+    pub fn get_checkpoint_dir(&self, tuid: &str) -> PathBuf {
+        self.base_dir.join("checkpoints").join(tuid)
+    }
+
+    /// Get all checkpoints for a game
+    pub fn get_checkpoints(&self, tuid: &str) -> Result<Vec<Checkpoint>> {
+        let metadata = self.load_metadata()?;
+        let mut checkpoints = metadata.checkpoints.get(tuid).cloned().unwrap_or_default();
+        
+        // Sort by created_at (newest first)
+        checkpoints.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        
+        Ok(checkpoints)
+    }
+
+    /// Save a checkpoint to metadata
+    pub fn save_checkpoint(&self, checkpoint: Checkpoint) -> Result<()> {
+        let mut metadata = self.load_metadata()?;
+        
+        let checkpoints = metadata.checkpoints
+            .entry(checkpoint.game_tuid.clone())
+            .or_insert_with(Vec::new);
+        
+        // Remove any existing checkpoint with the same ID
+        checkpoints.retain(|c| c.id != checkpoint.id);
+        
+        // Add the new checkpoint
+        checkpoints.push(checkpoint);
+        
+        self.save_metadata(&metadata)?;
+        Ok(())
+    }
+
+    /// Delete a checkpoint
+    pub fn delete_checkpoint(&self, tuid: &str, checkpoint_id: &str) -> Result<()> {
+        let mut metadata = self.load_metadata()?;
+        
+        if let Some(checkpoints) = metadata.checkpoints.get_mut(tuid) {
+            if let Some(idx) = checkpoints.iter().position(|c| c.id == checkpoint_id) {
+                let checkpoint = checkpoints.remove(idx);
+                
+                // Delete the checkpoint directory
+                if checkpoint.checkpoint_path.exists() {
+                    fs::remove_dir_all(&checkpoint.checkpoint_path)
+                        .context("Failed to delete checkpoint directory")?;
+                }
+            }
+        }
+        
+        self.save_metadata(&metadata)?;
+        Ok(())
+    }
+
+    /// Create a new checkpoint directory
+    pub fn create_checkpoint_dir(&self, tuid: &str, checkpoint_id: &str) -> Result<PathBuf> {
+        let checkpoint_dir = self.get_checkpoint_dir(tuid).join(checkpoint_id);
+        fs::create_dir_all(&checkpoint_dir)
+            .context("Failed to create checkpoint directory")?;
+        Ok(checkpoint_dir)
+    }
+
+    /// Get the latest checkpoint for a game
+    pub fn get_latest_checkpoint(&self, tuid: &str) -> Result<Option<Checkpoint>> {
+        let checkpoints = self.get_checkpoints(tuid)?;
+        Ok(checkpoints.first().cloned())
+    }
+
+    /// Get total playtime for a game from checkpoints
+    pub fn get_total_playtime(&self, tuid: &str) -> Result<u64> {
+        let checkpoints = self.get_checkpoints(tuid)?;
+        
+        // Get the maximum playtime from all checkpoints
+        Ok(checkpoints
+            .iter()
+            .map(|c| c.playtime_seconds)
+            .max()
+            .unwrap_or(0))
     }
 
     /// Get storage statistics

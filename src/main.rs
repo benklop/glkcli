@@ -13,6 +13,9 @@ mod app;
 mod ui;
 mod utils;
 mod border_style;
+mod pty;
+mod pty_embedded;
+mod criu;
 
 use launcher::*;
 
@@ -37,6 +40,7 @@ fn setup_debug_logging() -> Result<()> {
             ))
         })
         .level(log::LevelFilter::Debug)
+        .level_for("vt100", log::LevelFilter::Warn)
         .chain(std::fs::OpenOptions::new()
             .create(true)
             .append(true)

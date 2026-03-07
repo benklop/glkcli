@@ -1,9 +1,16 @@
 use crate::config::GameFormat;
 use crate::detect::*;
+use crate::storage::{Checkpoint, GameStorage};
+use crate::pty::InterceptedKey;
+use crate::pty_embedded::EmbeddedPty;
+use crate::criu;
 use anyhow::{anyhow, Context, Result};
+use crossterm::execute;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Instant, SystemTime};
+use chrono::{DateTime, Local};
 
 /// Interactive Fiction game launcher
 ///
@@ -149,13 +156,464 @@ impl Launcher {
         Ok(())
     }
 
+    /// Run a game in an embedded PTY with status bar
+    ///
+    /// This improves on run_game_with_checkpoints by embedding the PTY in a ratatui
+    /// interface with a status bar showing elapsed time and key reminders.
+    ///
+    /// # Arguments
+    /// * `game_path` - Path to the game file
+    /// * `format` - Detected game format
+    /// * `tuid` - Game identifier for checkpoint storage
+    /// * `storage` - Storage manager for checkpoint persistence
+    /// * `restore_checkpoint_id` - Optional checkpoint ID to restore from
+    /// * `game_name` - Display name for the game
+    ///
+    /// # Returns
+    /// Returns Ok(()) when the game exits normally
+    pub fn run_game_embedded(
+        &self,
+        game_path: &Path,
+        format: GameFormat,
+        tuid: &str,
+        storage: &GameStorage,
+        restore_checkpoint_id: Option<String>,
+        game_name: &str,
+    ) -> Result<()> {
+        use crossterm::{
+            execute,
+            terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        };
+        use ratatui::{backend::CrosstermBackend, Terminal};
+        use std::io;
+
+        let interpreter_name = format.interpreter()
+            .ok_or_else(|| anyhow!("No interpreter configured for format: {}", format))?;
+
+        let interpreter_path = self.find_interpreter_path(interpreter_name)
+            .ok_or_else(|| anyhow!("Interpreter '{}' not found", interpreter_name))?;
+
+        let game_dir = game_path.parent()
+            .ok_or_else(|| anyhow!("Could not determine game directory"))?;
+
+        // Verify interpreter exists and is executable
+        if !interpreter_path.exists() {
+            return Err(anyhow!("Interpreter not found at: {}", interpreter_path.display()));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&interpreter_path)
+                .context("Failed to read interpreter metadata")?;
+            let permissions = metadata.permissions();
+            if permissions.mode() & 0o111 == 0 {
+                return Err(anyhow!("Interpreter is not executable: {}", interpreter_path.display()));
+            }
+        }
+
+        log::info!("Using interpreter: {} for format: {}", interpreter_path.display(), format);
+
+        // Prepare interpreter arguments
+        let mut args: Vec<String> = format.flags().iter().map(|s| s.to_string()).collect();
+        args.push(game_path.display().to_string());
+        
+        let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        log::debug!("Launching game in embedded PTY: interpreter={} args={:?} cwd={:?}", 
+                   interpreter_path.display(), args_refs, game_dir);
+
+        // Track playtime
+        let mut cumulative_playtime: u64 = 0;
+
+        // Handle checkpoint restore
+        if let Some(checkpoint_id) = restore_checkpoint_id {
+            let checkpoints = storage.get_checkpoints(tuid)?;
+            let checkpoint = checkpoints.iter()
+                .find(|c| c.id == checkpoint_id)
+                .ok_or_else(|| anyhow!("Checkpoint not found: {}", checkpoint_id))?;
+            
+            log::info!("Restoring from checkpoint: {}", checkpoint.name);
+            cumulative_playtime = checkpoint.playtime_seconds;
+            
+            // Restore the CRIU checkpoint
+            log::info!("Restoring CRIU checkpoint from: {:?}", checkpoint.checkpoint_path);
+            let restored_pid = criu::restore_checkpoint(&checkpoint.checkpoint_path)?;
+            log::info!("Successfully restored process with PID: {}", restored_pid);
+            
+            // Enable sound after restore using SIGUSR1
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            
+            // Give the process a moment to fully restore
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            
+            log::info!("Enabling sound after restore (SIGUSR1 to PID {})", restored_pid);
+            if let Err(e) = kill(Pid::from_raw(restored_pid), Signal::SIGUSR1) {
+                log::warn!("Failed to send SIGUSR1 to enable sound: {}", e);
+                // Don't fail the restore, just warn
+            }
+            
+            // Since CRIU restore runs detached, we need to monitor it differently
+            // For now, we'll use a simpler approach: run in foreground without embedded PTY
+            println!("\n=== Game Restored from Checkpoint: {} ===", checkpoint.name);
+            println!("Press Ctrl+C to exit and return to menu\n");
+            
+            // Wait for the restored process to complete
+            use nix::sys::wait::{waitpid, WaitStatus};
+            
+            loop {
+                match waitpid(Pid::from_raw(restored_pid), None) {
+                    Ok(WaitStatus::Exited(_, _)) => {
+                        log::info!("Restored process {} exited normally", restored_pid);
+                        break;
+                    }
+                    Ok(WaitStatus::Signaled(_, signal, _)) => {
+                        log::info!("Restored process {} was terminated by signal: {:?}", restored_pid, signal);
+                        break;
+                    }
+                    Ok(_) => {
+                        // Process still running or other status
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        log::error!("Error waiting for restored process: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            println!("\n=== Game Session Ended ===");
+            println!("Returning to menu...\n");
+            return Ok(());
+        }
+
+        let interpreter_str = interpreter_path.to_str()
+            .ok_or_else(|| anyhow!("Interpreter path contains invalid UTF-8: {}", interpreter_path.display()))?;
+
+        // Setup terminal for ratatui FIRST, before spawning PTY
+        // This prevents any early output from going to the wrong place
+        enable_raw_mode().context("Failed to enable raw mode")?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)
+            .context("Failed to enter alternate screen")?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)
+            .context("Failed to create terminal")?;
+
+        // Clear the terminal before starting
+        terminal.clear()?;
+
+        // NOW create embedded PTY
+        let mut pty = EmbeddedPty::spawn(
+            interpreter_str,
+            &args_refs,
+            Some(game_dir),
+            game_name.to_string(),
+        )?;
+
+        log::info!("Game started with PID: {}", pty.pid());
+
+        // Run the embedded PTY
+        let result = self.run_embedded_loop(&mut terminal, &mut pty, tuid, storage, cumulative_playtime);
+
+        // Restore terminal
+        disable_raw_mode().context("Failed to disable raw mode")?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen
+        ).context("Failed to leave alternate screen")?;
+        terminal.show_cursor().context("Failed to show cursor")?;
+
+        result
+    }
+
+    /// Main event loop for embedded PTY
+    fn run_embedded_loop<B: ratatui::backend::Backend>(
+        &self,
+        terminal: &mut ratatui::Terminal<B>,
+        pty: &mut EmbeddedPty,
+        tuid: &str,
+        storage: &GameStorage,
+        initial_playtime: u64,
+    ) -> Result<()> {
+        use crossterm::event::{self, Event};
+        use crossterm::terminal::disable_raw_mode;
+        use std::time::Duration;
+
+        let mut cumulative_playtime = initial_playtime;
+        let mut session_start = Instant::now();
+
+        loop {
+            // Draw the current state
+            terminal.draw(|f| pty.render(f))?;
+
+            // Poll for events (faster polling for better responsiveness)
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    Event::Key(key) => {
+                        // Handle key input
+                        match pty.handle_key(&key)? {
+                            Some(InterceptedKey::SaveAndExit) => {
+                                log::info!("F1 pressed: Save and exit");
+                                
+                                let elapsed = session_start.elapsed().as_secs();
+                                let total_playtime = cumulative_playtime + elapsed;
+                                
+                                // Create checkpoint - CRIU will stop the process
+                                match self.create_checkpoint_embedded(
+                                    pty,
+                                    tuid,
+                                    storage,
+                                    total_playtime,
+                                    "Auto-save (F1)",
+                                    false  // CRIU stops the process
+                                ) {
+                                    Ok(_) => {
+                                        // Don't send SIGKILL - CRIU already stopped the process
+                                        log::info!("Checkpoint created, process stopped by CRIU");
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to create checkpoint: {}", e);
+                                    }
+                                }
+                                
+                                break;
+                            }
+                            Some(InterceptedKey::SaveAndContinue) => {
+                                log::info!("F2 pressed: Save and continue");
+                                
+                                let elapsed = session_start.elapsed().as_secs();
+                                let total_playtime = cumulative_playtime + elapsed;
+                                
+                                // Create checkpoint but continue playing
+                                if let Err(e) = self.create_checkpoint_embedded(
+                                    pty,
+                                    tuid,
+                                    storage,
+                                    total_playtime,
+                                    "Quick-save (F2)",
+                                    true  // Keep process running
+                                ) {
+                                    log::error!("Failed to create checkpoint: {}", e);
+                                } else {
+                                    cumulative_playtime = total_playtime;
+                                    session_start = Instant::now();
+                                }
+                            }
+                            Some(InterceptedKey::QuickReload) => {
+                                log::info!("F3 pressed: Quick reload");
+                                
+                                // Get latest checkpoint and restore
+                                if let Ok(Some(checkpoint)) = storage.get_latest_checkpoint(tuid) {
+                                    log::info!("Restoring from checkpoint: {}", checkpoint.name);
+                                    
+                                    // Kill the current process
+                                    log::info!("Terminating current game process for restore");
+                                    let _ = pty.signal(nix::sys::signal::Signal::SIGKILL);
+                                    std::thread::sleep(std::time::Duration::from_millis(100));
+                                    
+                                    // Exit the embedded PTY and restore terminal
+                                    use crossterm::terminal::LeaveAlternateScreen;
+                                    use std::io;
+                                    execute!(io::stdout(), LeaveAlternateScreen)
+                                        .context("Failed to leave alternate screen")?;
+                                    disable_raw_mode().context("Failed to disable raw mode")?;
+                                    
+                                    // Restore the checkpoint
+                                    match criu::restore_checkpoint(&checkpoint.checkpoint_path) {
+                                        Ok(restored_pid) => {
+                                            log::info!("Successfully restored process with PID: {}", restored_pid);
+                                            println!("\n=== Quick Reload from: {} ===", checkpoint.name);
+                                            println!("Press Ctrl+C to exit\n");
+                                            
+                                            // Wait for restored process
+                                            use nix::sys::wait::{waitpid, WaitStatus};
+                                            use nix::unistd::Pid;
+                                            
+                                            loop {
+                                                match waitpid(Pid::from_raw(restored_pid), None) {
+                                                    Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
+                                                    Err(e) => {
+                                                        log::error!("Error waiting for restored process: {}", e);
+                                                        break;
+                                                    }
+                                                    _ => std::thread::sleep(std::time::Duration::from_millis(100)),
+                                                }
+                                            }
+                                            
+                                            println!("\n=== Restored Session Ended ===");
+                                            return Ok(());
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to restore checkpoint: {}", e);
+                                            log::error!("Failed to restore checkpoint: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
+                                } else {
+                                    log::warn!("No checkpoints available to restore");
+                                }
+                            }
+                            Some(InterceptedKey::QuickReloadNoConfirm) => {
+                                log::info!("Shift+F3 pressed: Quick reload without confirmation");
+                                
+                                // Get latest checkpoint and restore immediately
+                                if let Ok(Some(checkpoint)) = storage.get_latest_checkpoint(tuid) {
+                                    log::info!("Restoring from checkpoint: {}", checkpoint.name);
+                                    
+                                    // Kill the current process
+                                    log::info!("Terminating current game process for restore");
+                                    let _ = pty.signal(nix::sys::signal::Signal::SIGKILL);
+                                    std::thread::sleep(std::time::Duration::from_millis(100));
+                                    
+                                    // Exit the embedded PTY and restore terminal
+                                    use crossterm::terminal::LeaveAlternateScreen;
+                                    use std::io;
+                                    execute!(io::stdout(), LeaveAlternateScreen)
+                                        .context("Failed to leave alternate screen")?;
+                                    disable_raw_mode().context("Failed to disable raw mode")?;
+                                    
+                                    // Restore the checkpoint
+                                    match criu::restore_checkpoint(&checkpoint.checkpoint_path) {
+                                        Ok(restored_pid) => {
+                                            log::info!("Successfully restored process with PID: {}", restored_pid);
+                                            println!("\n=== Quick Reload from: {} ===", checkpoint.name);
+                                            println!("Press Ctrl+C to exit\n");
+                                            
+                                            // Wait for restored process
+                                            use nix::sys::wait::{waitpid, WaitStatus};
+                                            use nix::unistd::Pid;
+                                            
+                                            loop {
+                                                match waitpid(Pid::from_raw(restored_pid), None) {
+                                                    Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
+                                                    Err(e) => {
+                                                        log::error!("Error waiting for restored process: {}", e);
+                                                        break;
+                                                    }
+                                                    _ => std::thread::sleep(std::time::Duration::from_millis(100)),
+                                                }
+                                            }
+                                            
+                                            println!("\n=== Restored Session Ended ===");
+                                            return Ok(());
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Failed to restore checkpoint: {}", e);
+                                            log::error!("Failed to restore checkpoint: {}", e);
+                                            return Err(e);
+                                        }
+                                    }
+                                } else {
+                                    log::warn!("No checkpoints available to restore");
+                                }
+                            }
+                            Some(InterceptedKey::QuitPrompt) => {
+                                // User confirmed quit (pressed Y after F4)
+                                log::info!("Quit confirmed by user");
+                                // Terminate the process gracefully
+                                if let Err(e) = pty.signal(nix::sys::signal::Signal::SIGTERM) {
+                                    log::warn!("Failed to send SIGTERM: {}", e);
+                                    let _ = pty.signal(nix::sys::signal::Signal::SIGKILL);
+                                }
+                                break;
+                            }
+                            Some(InterceptedKey::ExitPrompt) => {
+                                // This shouldn't happen anymore since ESC is no longer intercepted
+                                log::info!("Exit prompt (should not occur)");
+                                break;
+                            }
+                            None => {
+                                // Key was forwarded to PTY or confirmation was cancelled
+                            }
+                        }
+                    }
+                    Event::Resize(cols, rows) => {
+                        pty.resize(cols, rows)?;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check if process has exited
+            if !pty.is_running() {
+                log::info!("Game process has exited");
+                break;
+            }
+        }
+
+        // Only wait if process is still running
+        if pty.is_running() {
+            log::debug!("Waiting for PTY process to exit");
+            pty.wait()?;
+        } else {
+            log::debug!("PTY process already exited, skipping wait");
+        }
+        Ok(())
+    }
+
+    /// Create a checkpoint for the embedded PTY
+    fn create_checkpoint_embedded(
+        &self,
+        pty: &mut EmbeddedPty,
+        tuid: &str,
+        storage: &GameStorage,
+        playtime_seconds: u64,
+        name: &str,
+        leave_running: bool,
+    ) -> Result<()> {
+        // Generate checkpoint ID
+        let checkpoint_id = format!("checkpoint_{}", SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs());
+        
+        // Create checkpoint directory
+        let checkpoint_dir = storage.create_checkpoint_dir(tuid, &checkpoint_id)?;
+        
+        log::info!("Creating checkpoint: {} (playtime: {}s, leave_running: {})", name, playtime_seconds, leave_running);
+
+        // CRIU handles process freezing/thawing internally via SIGSTOP/SIGCONT.
+        // No pre/post signalling needed on our side.
+        criu::checkpoint_process(pty.pid(), &checkpoint_dir, leave_running)?;
+        
+        // Save checkpoint metadata
+        let checkpoint = Checkpoint {
+            id: checkpoint_id,
+            game_tuid: tuid.to_string(),
+            name: name.to_string(),
+            checkpoint_path: checkpoint_dir,
+            created_at: SystemTime::now(),
+            playtime_seconds,
+            description: Some(format!(
+                "Created on {}",
+                DateTime::<Local>::from(SystemTime::now()).format("%Y-%m-%d %H:%M:%S")
+            )),
+        };
+        
+        storage.save_checkpoint(checkpoint)?;
+        
+        log::info!("Checkpoint created successfully");
+        Ok(())
+    }
+
     fn find_interpreter_path(&self, interpreter_name: &str) -> Option<PathBuf> {
-        // First check configured installation directory (set at compile time)
+        // First check AppImage runtime: when running from AppImage, APPDIR is set
+        // and interpreters are at $APPDIR/usr/share/glkterm/bin
+        if let Ok(appdir) = env::var("APPDIR") {
+            let install_path = PathBuf::from(&appdir).join("usr/share/glkterm/bin").join(interpreter_name);
+            if install_path.exists() {
+                return install_path.canonicalize().ok();
+            }
+        }
+
+        // Then check configured installation directory (set at compile time)
         // This is typically /usr/share/glkterm/bin for system installations
         if let Some(install_dir) = option_env!("GLKTERM_BIN_DIR") {
             let install_path = PathBuf::from(install_dir).join(interpreter_name);
             if install_path.exists() {
-                return Some(install_path);
+                // Return canonicalized absolute path
+                return install_path.canonicalize().ok();
             }
         }
 
@@ -169,7 +627,10 @@ impl Launcher {
         for path_str in &build_paths {
             let path = PathBuf::from(path_str);
             if path.exists() {
-                return Some(path);
+                // Return canonicalized absolute path
+                if let Ok(canonical) = path.canonicalize() {
+                    return Some(canonical);
+                }
             }
         }
 
@@ -178,7 +639,8 @@ impl Launcher {
             for dir in path_env.split(':') {
                 let full_path = PathBuf::from(dir).join(interpreter_name);
                 if full_path.exists() {
-                    return Some(full_path);
+                    // PATH entries should already be absolute, but canonicalize anyway
+                    return full_path.canonicalize().ok();
                 }
             }
         }
